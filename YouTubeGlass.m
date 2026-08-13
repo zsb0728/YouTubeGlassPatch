@@ -16,26 +16,7 @@ static BOOL IsBoolGetter(Method m) {
     return ok;
 }
 
-static void ForceFlagOnClass(Class cls, SEL sel, BOOL value) {
-    unsigned count = 0;
-    Method *methods = class_copyMethodList(cls, &count);
-    for (unsigned i = 0; i < count; i++) {
-        Method m = methods[i];
-        if (method_getName(m) == sel && IsBoolGetter(m))
-            method_setImplementation(m, value ? (IMP)ReturnYES : (IMP)ReturnNO);
-    }
-    free(methods);
-    Class meta = object_getClass(cls);
-    methods = class_copyMethodList(meta, &count);
-    for (unsigned i = 0; i < count; i++) {
-        Method m = methods[i];
-        if (method_getName(m) == sel && IsBoolGetter(m))
-            method_setImplementation(m, value ? (IMP)ReturnYES : (IMP)ReturnNO);
-    }
-    free(methods);
-}
-
-static void ForceOfficialGlassFlags(void) {
+static BOOL DesiredFlag(const char *name, BOOL *value) {
     static const char *yesNames[] = {
         "isFrostedPivotBarPermitted",
         "isLiquidGlassAvailable",
@@ -51,16 +32,36 @@ static void ForceOfficialGlassFlags(void) {
         "mainAppCoreClientIosEnableModernIaFrostedBottomBarFixForSearch",
         "mainAppCoreClientIos27EnableLiquidGlass"
     };
-    int count = objc_getClassList(NULL, 0);
-    if (count <= 0) return;
-    Class *classes = (__unsafe_unretained Class *)calloc((size_t)count, sizeof(Class));
-    count = objc_getClassList(classes, count);
-    for (int i = 0; i < count; i++) {
-        for (NSUInteger j = 0; j < sizeof(yesNames)/sizeof(yesNames[0]); j++)
-            ForceFlagOnClass(classes[i], sel_registerName(yesNames[j]), YES);
-        ForceFlagOnClass(classes[i], sel_registerName("optOutOfFrostedPivotBar"), NO);
+    if (!strcmp(name, "optOutOfFrostedPivotBar")) { *value = NO; return YES; }
+    for (NSUInteger i = 0; i < sizeof(yesNames)/sizeof(yesNames[0]); i++)
+        if (!strcmp(name, yesNames[i])) { *value = YES; return YES; }
+    return NO;
+}
+
+static void HookDeclaredFlags(Class cls) {
+    unsigned count = 0;
+    Method *methods = class_copyMethodList(cls, &count);
+    for (unsigned i = 0; i < count; i++) {
+        Method m = methods[i]; BOOL value = NO;
+        if (DesiredFlag(sel_getName(method_getName(m)), &value) && IsBoolGetter(m))
+            method_setImplementation(m, value ? (IMP)ReturnYES : (IMP)ReturnNO);
     }
-    free(classes);
+    free(methods);
+}
+
+static void ForceOfficialGlassFlags(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        int count = objc_getClassList(NULL, 0);
+        if (count <= 0) return;
+        Class *classes = (__unsafe_unretained Class *)calloc((size_t)count, sizeof(Class));
+        count = objc_getClassList(classes, count);
+        for (int i = 0; i < count; i++) {
+            HookDeclaredFlags(classes[i]);
+            HookDeclaredFlags(object_getClass(classes[i]));
+        }
+        free(classes);
+    });
 }
 
 static id NewGlass(BOOL interactive) {
