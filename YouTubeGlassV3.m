@@ -76,9 +76,49 @@ static void ClearBottomBarHierarchy(UIView *host) {
     }
 }
 
+static void CollectLargeScrollViews(UIView *v, UIWindow *w, NSMutableArray<UIScrollView*> *out) {
+    if([v isKindOfClass:UIScrollView.class]) {
+        CGRect r=[v convertRect:v.bounds toView:w];
+        if(r.size.height>350.0 && r.size.width>w.bounds.size.width*.80) [out addObject:(UIScrollView*)v];
+    }
+    for(UIView *s in v.subviews) CollectLargeScrollViews(s,w,out);
+}
+
+static UIScrollView *MainFeedNearHost(UIView *host, BOOL below) {
+    UIWindow *w=host.window; if(!w)return nil;
+    NSMutableArray *a=[NSMutableArray array]; CollectLargeScrollViews(w,w,a);
+    CGRect hr=[host convertRect:host.bounds toView:w]; UIScrollView *best=nil; CGFloat score=CGFLOAT_MAX;
+    for(UIScrollView *s in a) {
+        if([host isDescendantOfView:s] || [s isDescendantOfView:host])continue;
+        CGRect r=[s convertRect:s.bounds toView:w];
+        CGFloat gap=below ? fabs(CGRectGetMinY(r)-CGRectGetMaxY(hr)) : fabs(CGRectGetMaxY(r)-CGRectGetMinY(hr));
+        if(gap<160.0 && gap<score){score=gap;best=s;}
+    }
+    return best;
+}
+
+static void ExtendFeedBehindBottomBar(UIView *host) {
+    UIWindow *w=host.window; UIScrollView *feed=MainFeedNearHost(host,NO); if(!w||!feed)return;
+    CGRect r=[feed convertRect:feed.bounds toView:w]; CGFloat target=CGRectGetMaxY(w.bounds);
+    CGFloat delta=target-CGRectGetMaxY(r); if(delta<=1.0)return;
+    CGRect f=feed.frame; f.size.height+=delta; feed.frame=f;
+    UIEdgeInsets in=feed.contentInset; in.bottom=MAX(in.bottom,host.bounds.size.height+8.0); feed.contentInset=in;
+    UIEdgeInsets si=feed.scrollIndicatorInsets; si.bottom=MAX(si.bottom,host.bounds.size.height+8.0); feed.scrollIndicatorInsets=si;
+}
+
+static void ExtendFeedBehindChipBar(UIView *host) {
+    UIWindow *w=host.window; UIScrollView *feed=MainFeedNearHost(host,YES); if(!w||!feed)return;
+    CGRect hr=[host convertRect:host.bounds toView:w], rr=[feed convertRect:feed.bounds toView:w];
+    CGFloat delta=CGRectGetMinY(rr)-CGRectGetMinY(hr); if(delta<=1.0||delta>180.0)return;
+    CGRect f=feed.frame; f.origin.y-=delta; f.size.height+=delta; feed.frame=f;
+    UIEdgeInsets in=feed.contentInset; in.top=MAX(in.top,host.bounds.size.height); feed.contentInset=in;
+}
+
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
+    ExtendFeedBehindBottomBar(host);
     ClearSurface(host); ClearStructuralBackdrops(host,5); ClearShortAncestors(host,220.0); ClearBottomBarHierarchy(host);
     UIVisualEffectView *ev = GlassForHost(host,YES); if (!ev) return;
+    ev.alpha=0.72;
     CGFloat safe = host.safeAreaInsets.bottom;
     if (safe < 1.0 && host.window) safe = host.window.safeAreaInsets.bottom;
     CGFloat buttonZone = MAX(52.0,host.bounds.size.height-safe);
@@ -102,6 +142,7 @@ static void StyleChip(UIView *host) API_AVAILABLE(ios(26.0)) {
     if (host.bounds.size.width<28 || host.bounds.size.width>260 || host.bounds.size.height<24 || host.bounds.size.height>64) return;
     ClearSurface(host); ClearStructuralBackdrops(host,2);
     UIVisualEffectView *ev = GlassForHost(host,YES); if (!ev) return;
+    ev.alpha=0.68;
     ev.frame=host.bounds; ev.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
     ev.layer.cornerRadius=MIN(host.bounds.size.height/2.0,16.0);
     TintGlass(ev,[host isKindOfClass:UIControl.class] ? ((UIControl*)host).selected : NO);
@@ -109,6 +150,7 @@ static void StyleChip(UIView *host) API_AVAILABLE(ios(26.0)) {
 }
 
 static void StyleChipBar(UIView *host) API_AVAILABLE(ios(26.0)) {
+    ExtendFeedBehindChipBar(host);
     ClearSurface(host); ClearShortAncestors(host,240.0);
     for(UIView *p=host.superview; p && ![p isKindOfClass:UIWindow.class]; p=p.superview) {
         if(p.bounds.size.height>260.0) break;
