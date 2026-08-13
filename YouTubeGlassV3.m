@@ -108,19 +108,25 @@ static void ExtendFeedBehindBottomBar(UIView *host) {
 
 static void ExtendFeedBehindChipBar(UIView *host) {
     UIWindow *w=host.window; UIScrollView *feed=MainFeedNearHost(host,YES); if(!w||!feed)return;
-    CGRect hr=[host convertRect:host.bounds toView:w], rr=[feed convertRect:feed.bounds toView:w];
-    CGFloat delta=CGRectGetMinY(rr)-CGRectGetMinY(hr); if(delta<=1.0||delta>180.0)return;
+    CGRect rr=[feed convertRect:feed.bounds toView:w];
+    CGFloat target=MAX(0.0,w.safeAreaInsets.top-8.0);
+    CGFloat delta=CGRectGetMinY(rr)-target; if(delta<=1.0||delta>360.0)return;
+    for(UIView *p=feed; p && ![p isKindOfClass:UIWindow.class]; p=p.superview){ p.clipsToBounds=NO; ClearSurface(p); }
     CGRect f=feed.frame; f.origin.y-=delta; f.size.height+=delta; feed.frame=f;
-    UIEdgeInsets in=feed.contentInset; in.top=MAX(in.top,host.bounds.size.height); feed.contentInset=in;
+    feed.backgroundColor=UIColor.clearColor; feed.opaque=NO;
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
     ExtendFeedBehindBottomBar(host);
-    ClearSurface(host); ClearStructuralBackdrops(host,5); ClearShortAncestors(host,220.0); ClearBottomBarHierarchy(host);
-    UIVisualEffectView *ev = GlassForHost(host,YES); if (!ev) return;
-    ev.alpha=0.72;
+    ClearSurface(host); ClearStructuralBackdrops(host,5); ClearShortAncestors(host,260.0); ClearBottomBarHierarchy(host);
     CGFloat safe = host.safeAreaInsets.bottom;
     if (safe < 1.0 && host.window) safe = host.window.safeAreaInsets.bottom;
+    CGFloat lift = MAX(30.0,safe+10.0);
+    host.transform=CGAffineTransformMakeTranslation(0,-lift);
+    UIVisualEffectView *ev = GlassForHost(host,YES); if (!ev) return;
+    ev.alpha=0.48;
+    id effect=ev.effect; SEL setTint=sel_registerName("setTintColor:");
+    if([effect respondsToSelector:setTint]) ((void(*)(id,SEL,id))objc_msgSend)(effect,setTint,UIColor.clearColor);
     CGFloat buttonZone = MAX(52.0,host.bounds.size.height-safe);
     CGFloat h = MIN(72.0,MAX(64.0,buttonZone+10.0));
     CGFloat inset = 8.0, y = -8.0;
