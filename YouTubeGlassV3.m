@@ -10,11 +10,11 @@ static YTGHook gHooks[12]; static int gHookCount = 0;
 static id NewNativeGlass(BOOL interactive) API_AVAILABLE(ios(26.0)) {
     Class cls = NSClassFromString(@"UIGlassEffect"); if (!cls) return nil;
     id effect = nil; SEL factory = sel_registerName("effectWithStyle:");
-    if ([cls respondsToSelector:factory]) effect = ((id(*)(id,SEL,NSInteger))objc_msgSend)(cls,factory,0);
+    if ([cls respondsToSelector:factory]) effect = ((id(*)(id,SEL,NSInteger))objc_msgSend)(cls,factory,1);
     if (!effect) {
         id obj = ((id(*)(id,SEL))objc_msgSend)(cls,@selector(alloc));
         SEL init = sel_registerName("initWithStyle:");
-        if ([obj respondsToSelector:init]) effect = ((id(*)(id,SEL,NSInteger))objc_msgSend)(obj,init,0);
+        if ([obj respondsToSelector:init]) effect = ((id(*)(id,SEL,NSInteger))objc_msgSend)(obj,init,1);
     }
     SEL setInteractive = sel_registerName("setInteractive:");
     if (effect && [effect respondsToSelector:setInteractive]) ((void(*)(id,SEL,BOOL))objc_msgSend)(effect,setInteractive,interactive);
@@ -55,24 +55,38 @@ static void ClearStructuralBackdrops(UIView *root, NSInteger depth) {
 
 static void ClearShortAncestors(UIView *host, CGFloat maxHeight) {
     UIView *p = host.superview;
-    for (int i=0; i<2 && p; i++,p=p.superview) {
-        if (p.bounds.size.height > maxHeight || p.bounds.size.width + 2 < host.bounds.size.width) break;
+    for (int i=0; i<4 && p; i++,p=p.superview) {
+        if (p.bounds.size.width + 2 < host.bounds.size.width) break;
         ClearSurface(p);
+        if (p.bounds.size.height > maxHeight) break;
+    }
+}
+
+static void ClearBottomBarHierarchy(UIView *host) {
+    UIView *pathChild=host, *p=host.superview;
+    for(int level=0; p && level<7 && ![p isKindOfClass:UIWindow.class]; level++,pathChild=p,p=p.superview) {
+        ClearSurface(p); p.clipsToBounds=NO;
+        CGRect hostRect=[host convertRect:host.bounds toView:p];
+        for(UIView *s in p.subviews) {
+            if(s==pathChild || [s isKindOfClass:UICollectionView.class] || [s isKindOfClass:UIScrollView.class]) continue;
+            CGRect overlap=CGRectIntersection(hostRect,s.frame);
+            NSString *n=NSStringFromClass(s.class);
+            if(!CGRectIsNull(overlap) && !CGRectIsEmpty(overlap) && (s.bounds.size.height<=180.0 || [n containsString:@"Background"] || [n containsString:@"Backdrop"])) ClearSurface(s);
+        }
     }
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
-    ClearSurface(host); ClearStructuralBackdrops(host,4); ClearShortAncestors(host,140.0);
-    for (UIView *p=host.superview; p && p.bounds.size.height<=140.0; p=p.superview) { ClearSurface(p); p.clipsToBounds=NO; }
+    ClearSurface(host); ClearStructuralBackdrops(host,5); ClearShortAncestors(host,220.0); ClearBottomBarHierarchy(host);
     UIVisualEffectView *ev = GlassForHost(host,YES); if (!ev) return;
     CGFloat safe = host.safeAreaInsets.bottom;
     if (safe < 1.0 && host.window) safe = host.window.safeAreaInsets.bottom;
-    CGFloat available = MAX(0.0,host.bounds.size.height-safe-6.0);
-    CGFloat h = MIN(58.0,MAX(50.0,available));
-    CGFloat inset = 12.0, y = 3.0;
+    CGFloat buttonZone = MAX(52.0,host.bounds.size.height-safe);
+    CGFloat h = MIN(72.0,MAX(64.0,buttonZone+10.0));
+    CGFloat inset = 8.0, y = -8.0;
     ev.frame = CGRectMake(inset,y,MAX(0.0,host.bounds.size.width-inset*2),h);
     ev.layer.cornerRadius = h/2.0; ev.layer.masksToBounds=YES;
-    ev.layer.borderWidth=0.5; ev.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.16].CGColor;
+    ev.layer.borderWidth=0.75; ev.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.20].CGColor;
     host.clipsToBounds = NO; [host sendSubviewToBack:ev];
 }
 
@@ -95,8 +109,17 @@ static void StyleChip(UIView *host) API_AVAILABLE(ios(26.0)) {
 }
 
 static void StyleChipBar(UIView *host) API_AVAILABLE(ios(26.0)) {
-    ClearSurface(host); ClearShortAncestors(host,100.0);
-    for (UIView *s in host.subviews) if (![s isKindOfClass:UICollectionView.class] && !IsProtectedContent(s)) ClearSurface(s);
+    ClearSurface(host); ClearShortAncestors(host,240.0);
+    for(UIView *p=host.superview; p && ![p isKindOfClass:UIWindow.class]; p=p.superview) {
+        if(p.bounds.size.height>260.0) break;
+        ClearSurface(p);
+    }
+    for (UIView *s in host.subviews) {
+        ClearSurface(s);
+        if([s isKindOfClass:UICollectionView.class]) {
+            UICollectionView *cv=(UICollectionView*)s; cv.backgroundView=nil; cv.backgroundColor=UIColor.clearColor; cv.opaque=NO;
+        }
+    }
 }
 
 static void GlassHeaderControls(UIView *root) API_AVAILABLE(ios(26.0)) {
