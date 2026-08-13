@@ -3,6 +3,9 @@
 #import <objc/message.h>
 
 static const void *kYTGlassKey = &kYTGlassKey;
+static const void *kYTBackdropKey = &kYTBackdropKey;
+static const void *kYTCaptureTimeKey = &kYTCaptureTimeKey;
+static BOOL gCapturingBackdrop = NO;
 typedef NS_ENUM(NSInteger, YTGKind) { YTGKindPivot, YTGKindChip, YTGKindChipBar, YTGKindHeader };
 typedef struct { Class cls; IMP original; YTGKind kind; } YTGHook;
 static YTGHook gHooks[12]; static int gHookCount = 0;
@@ -116,24 +119,42 @@ static void ExtendFeedBehindChipBar(UIView *host) {
     feed.backgroundColor=UIColor.clearColor; feed.opaque=NO;
 }
 
+static UIImageView *BackdropForHost(UIView *host) {
+    UIImageView *iv=objc_getAssociatedObject(host,kYTBackdropKey);
+    if(!iv){ iv=[[UIImageView alloc]initWithFrame:host.bounds]; iv.userInteractionEnabled=NO; iv.contentMode=UIViewContentModeScaleToFill; iv.clipsToBounds=YES; [host insertSubview:iv atIndex:0]; objc_setAssociatedObject(host,kYTBackdropKey,iv,OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+    iv.frame=host.bounds; return iv;
+}
+
+static void UpdateSampledBackdrop(UIView *host, BOOL sampleAbove) {
+    if(gCapturingBackdrop || !host.window || host.bounds.size.width<10 || host.bounds.size.height<10)return;
+    CFTimeInterval now=CACurrentMediaTime(); NSNumber *last=objc_getAssociatedObject(host,kYTCaptureTimeKey);
+    if(last && now-last.doubleValue<0.16)return;
+    objc_setAssociatedObject(host,kYTCaptureTimeKey,@(now),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UIWindow *w=host.window; CGRect hr=[host convertRect:host.bounds toView:w];
+    CGFloat h=MIN(MAX(host.bounds.size.height,54.0),110.0);
+    CGRect source=CGRectMake(MAX(0.0,hr.origin.x),sampleAbove?MAX(w.safeAreaInsets.top,CGRectGetMinY(hr)-h):MIN(CGRectGetHeight(w.bounds)-h,CGRectGetMaxY(hr)),MIN(hr.size.width,w.bounds.size.width),h);
+    if(source.size.width<10||source.size.height<10)return;
+    gCapturingBackdrop=YES; BOOL hidden=host.hidden; host.hidden=YES;
+    UIGraphicsBeginImageContextWithOptions(source.size,NO,UIScreen.mainScreen.scale);
+    CGContextRef c=UIGraphicsGetCurrentContext(); CGContextTranslateCTM(c,-source.origin.x,-source.origin.y);
+    [w.layer renderInContext:c]; UIImage *image=UIGraphicsGetImageFromCurrentImageContext(); UIGraphicsEndImageContext();
+    host.hidden=hidden; gCapturingBackdrop=NO;
+    UIImageView *iv=BackdropForHost(host); iv.image=image; iv.alpha=1.0; [host sendSubviewToBack:iv];
+    UIVisualEffectView *ev=objc_getAssociatedObject(host,kYTGlassKey); if(ev){ [host insertSubview:ev aboveSubview:iv]; }
+}
+
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
-    ExtendFeedBehindBottomBar(host);
-    ClearSurface(host); ClearStructuralBackdrops(host,5); ClearShortAncestors(host,260.0); ClearBottomBarHierarchy(host);
-    CGFloat safe = host.safeAreaInsets.bottom;
-    if (safe < 1.0 && host.window) safe = host.window.safeAreaInsets.bottom;
-    CGFloat lift = MAX(30.0,safe+10.0);
-    host.transform=CGAffineTransformMakeTranslation(0,-lift);
-    UIVisualEffectView *ev = GlassForHost(host,YES); if (!ev) return;
-    ev.alpha=0.48;
-    id effect=ev.effect; SEL setTint=sel_registerName("setTintColor:");
-    if([effect respondsToSelector:setTint]) ((void(*)(id,SEL,id))objc_msgSend)(effect,setTint,UIColor.clearColor);
-    CGFloat buttonZone = MAX(52.0,host.bounds.size.height-safe);
-    CGFloat h = MIN(72.0,MAX(64.0,buttonZone+10.0));
-    CGFloat inset = 8.0, y = -8.0;
-    ev.frame = CGRectMake(inset,y,MAX(0.0,host.bounds.size.width-inset*2),h);
-    ev.layer.cornerRadius = h/2.0; ev.layer.masksToBounds=YES;
-    ev.layer.borderWidth=0.75; ev.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.20].CGColor;
-    host.clipsToBounds = NO; [host sendSubviewToBack:ev];
+    host.transform=CGAffineTransformIdentity;
+    ClearSurface(host); ClearStructuralBackdrops(host,5); ClearShortAncestors(host,220.0); ClearBottomBarHierarchy(host);
+    UpdateSampledBackdrop(host,YES);
+    CGFloat safe=host.safeAreaInsets.bottom; if(safe<1.0&&host.window)safe=host.window.safeAreaInsets.bottom;
+    UIVisualEffectView *ev=GlassForHost(host,YES); if(!ev)return;
+    ev.alpha=0.52; id effect=ev.effect; SEL setTint=sel_registerName("setTintColor:");
+    if([effect respondsToSelector:setTint])((void(*)(id,SEL,id))objc_msgSend)(effect,setTint,UIColor.clearColor);
+    CGFloat h=MIN(72.0,MAX(64.0,host.bounds.size.height-safe+10.0));
+    ev.frame=CGRectMake(8.0,MAX(0.0,(host.bounds.size.height-safe-h)/2.0),MAX(0.0,host.bounds.size.width-16.0),h);
+    ev.layer.cornerRadius=h/2.0; ev.layer.masksToBounds=YES; ev.layer.borderWidth=.75; ev.layer.borderColor=[UIColor colorWithWhite:1 alpha:.20].CGColor;
+    UIImageView *bg=objc_getAssociatedObject(host,kYTBackdropKey); if(bg)[host insertSubview:ev aboveSubview:bg];
 }
 
 static void TintGlass(UIVisualEffectView *ev, BOOL selected) API_AVAILABLE(ios(26.0)) {
@@ -156,8 +177,8 @@ static void StyleChip(UIView *host) API_AVAILABLE(ios(26.0)) {
 }
 
 static void StyleChipBar(UIView *host) API_AVAILABLE(ios(26.0)) {
-    ExtendFeedBehindChipBar(host);
     ClearSurface(host); ClearShortAncestors(host,240.0);
+    UpdateSampledBackdrop(host,NO);
     for(UIView *p=host.superview; p && ![p isKindOfClass:UIWindow.class]; p=p.superview) {
         if(p.bounds.size.height>260.0) break;
         ClearSurface(p);
