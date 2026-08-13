@@ -17,12 +17,22 @@ static BOOL IsBoolGetter(Method m) {
 }
 
 static void ForceFlagOnClass(Class cls, SEL sel, BOOL value) {
-    Method m = class_getInstanceMethod(cls, sel);
-    if (IsBoolGetter(m)) method_setImplementation(m, value ? (IMP)ReturnYES : (IMP)ReturnNO);
+    unsigned count = 0;
+    Method *methods = class_copyMethodList(cls, &count);
+    for (unsigned i = 0; i < count; i++) {
+        Method m = methods[i];
+        if (method_getName(m) == sel && IsBoolGetter(m))
+            method_setImplementation(m, value ? (IMP)ReturnYES : (IMP)ReturnNO);
+    }
+    free(methods);
     Class meta = object_getClass(cls);
-    Method cm = class_getClassMethod(cls, sel);
-    if (IsBoolGetter(cm)) method_setImplementation(cm, value ? (IMP)ReturnYES : (IMP)ReturnNO);
-    (void)meta;
+    methods = class_copyMethodList(meta, &count);
+    for (unsigned i = 0; i < count; i++) {
+        Method m = methods[i];
+        if (method_getName(m) == sel && IsBoolGetter(m))
+            method_setImplementation(m, value ? (IMP)ReturnYES : (IMP)ReturnNO);
+    }
+    free(methods);
 }
 
 static void ForceOfficialGlassFlags(void) {
