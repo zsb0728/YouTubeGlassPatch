@@ -165,8 +165,8 @@ static void ScanWindows(void) {
 }
 
 __attribute__((constructor)) static void YouTubeGlassStart(void) {
+    ForceOfficialGlassFlags();
     dispatch_async(dispatch_get_main_queue(), ^{
-        ForceOfficialGlassFlags();
         Method m = class_getInstanceMethod(UIView.class, @selector(layoutSubviews));
         gLayoutIMP = method_getImplementation(m);
         method_setImplementation(m, (IMP)GlassLayout);
