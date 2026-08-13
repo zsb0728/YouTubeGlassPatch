@@ -62,12 +62,18 @@ static void ClearShortAncestors(UIView *host, CGFloat maxHeight) {
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
-    ClearSurface(host); ClearStructuralBackdrops(host,3); ClearShortAncestors(host,120.0);
+    ClearSurface(host); ClearStructuralBackdrops(host,4); ClearShortAncestors(host,140.0);
+    for (UIView *p=host.superview; p && p.bounds.size.height<=140.0; p=p.superview) { ClearSurface(p); p.clipsToBounds=NO; }
     UIVisualEffectView *ev = GlassForHost(host,YES); if (!ev) return;
-    CGFloat inset = 8.0, y = 2.0, h = MAX(0.0,host.bounds.size.height-4.0);
+    CGFloat safe = host.safeAreaInsets.bottom;
+    if (safe < 1.0 && host.window) safe = host.window.safeAreaInsets.bottom;
+    CGFloat available = MAX(0.0,host.bounds.size.height-safe-6.0);
+    CGFloat h = MIN(58.0,MAX(50.0,available));
+    CGFloat inset = 12.0, y = 3.0;
     ev.frame = CGRectMake(inset,y,MAX(0.0,host.bounds.size.width-inset*2),h);
-    ev.layer.cornerRadius = h/2.0; host.clipsToBounds = NO;
-    [host sendSubviewToBack:ev];
+    ev.layer.cornerRadius = h/2.0; ev.layer.masksToBounds=YES;
+    ev.layer.borderWidth=0.5; ev.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.16].CGColor;
+    host.clipsToBounds = NO; [host sendSubviewToBack:ev];
 }
 
 static void TintGlass(UIVisualEffectView *ev, BOOL selected) API_AVAILABLE(ios(26.0)) {
@@ -105,7 +111,13 @@ static void GlassHeaderControls(UIView *root) API_AVAILABLE(ios(26.0)) {
 static void StyleHeader(UIView *host) API_AVAILABLE(ios(26.0)) {
     ClearSurface(host);
     @try { id shadow=[host valueForKey:@"shadowView"]; if ([shadow isKindOfClass:UIView.class]) ((UIView*)shadow).hidden=YES; } @catch (__unused id e) {}
-    GlassHeaderControls(host);
+    UIView *right=nil;
+    @try { id v=[host valueForKey:@"rightButtonBar"]; if ([v isKindOfClass:UIView.class]) right=v; } @catch (__unused id e) {}
+    if (right && right.bounds.size.width>=60 && right.bounds.size.height>=28) {
+        ClearSurface(right); ClearStructuralBackdrops(right,1);
+        UIVisualEffectView *ev=GlassForHost(right,YES);
+        if(ev){ ev.frame=CGRectInset(right.bounds,-2.0,-2.0); ev.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight; ev.layer.cornerRadius=(right.bounds.size.height+4.0)/2.0; ev.layer.masksToBounds=YES; ev.layer.borderWidth=.5; ev.layer.borderColor=[UIColor colorWithWhite:1 alpha:.16].CGColor; [right sendSubviewToBack:ev]; }
+    } else GlassHeaderControls(host);
 }
 
 static YTGHook *HookForObject(id obj) {
