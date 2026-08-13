@@ -14,7 +14,7 @@ jobs:
           set -euxo pipefail
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           mkdir -p out/YouTubeGlass.framework
-          xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -fobjc-arc -fblocks -O2 -dynamiclib YouTubeGlassV3.m -framework UIKit -framework Foundation -framework QuartzCore -framework CoreGraphics -install_name '@rpath/YouTubeGlass.framework/YouTubeGlass' -current_version 3.0 -compatibility_version 1.0 -o out/YouTubeGlass.framework/YouTubeGlass
+          xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -fobjc-arc -fblocks -O2 -dynamiclib YouTubeGlassV3.m HierarchyDiagnostic.m -framework UIKit -framework Foundation -framework QuartzCore -framework CoreGraphics -install_name '@rpath/YouTubeGlass.framework/YouTubeGlass' -current_version 3.0 -compatibility_version 1.0 -o out/YouTubeGlass.framework/YouTubeGlass
           cp Info.plist out/YouTubeGlass.framework/Info.plist
           file out/YouTubeGlass.framework/YouTubeGlass
           otool -L out/YouTubeGlass.framework/YouTubeGlass
