@@ -50,9 +50,18 @@ static id NewNativeGlass(BOOL interactive) API_AVAILABLE(ios(26.0)) {
     return effect;
 }
 
+static id NewClearGlass(BOOL interactive) API_AVAILABLE(ios(26.0)) {
+    Class cls=NSClassFromString(@"UIGlassEffect");if(!cls)return nil;id effect=nil;SEL f=sel_registerName("effectWithStyle:");
+    if([cls respondsToSelector:f])effect=((id(*)(id,SEL,NSInteger))objc_msgSend)(cls,f,1);
+    if(!effect){id obj=((id(*)(id,SEL))objc_msgSend)(cls,@selector(alloc));SEL i=sel_registerName("initWithStyle:");if([obj respondsToSelector:i])effect=((id(*)(id,SEL,NSInteger))objc_msgSend)(obj,i,1);}
+    SEL set=sel_registerName("setInteractive:");if(effect&&[effect respondsToSelector:set])((void(*)(id,SEL,BOOL))objc_msgSend)(effect,set,interactive);return effect;
+}
+
 static void ClearSurface(UIView *v) {
     if (!v) return; v.opaque = NO; v.backgroundColor = UIColor.clearColor; v.layer.backgroundColor = nil;
 }
+
+static UIVisualEffectView *ClearGlassForHost(UIView*host){UIVisualEffectView*ev=objc_getAssociatedObject(host,kYTGlassKey);if(!ev){ev=[[UIVisualEffectView alloc]initWithEffect:NewClearGlass(NO)];ev.userInteractionEnabled=NO;ev.clipsToBounds=YES;ev.layer.cornerCurve=kCACornerCurveContinuous;[host insertSubview:ev atIndex:0];objc_setAssociatedObject(host,kYTGlassKey,ev,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}else ev.effect=NewClearGlass(NO);return ev;}
 
 static UIVisualEffectView *GlassForHost(UIView *host, BOOL interactive) API_AVAILABLE(ios(26.0)) {
     UIVisualEffectView *ev = objc_getAssociatedObject(host,kYTGlassKey);
@@ -287,7 +296,7 @@ static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
     ExtendRealFeedUnderPivot(host);
     ClearSurface(host); ClearShortAncestors(host,260.0); ClearBottomBarHierarchy(host);
     CGFloat safe=host.safeAreaInsets.bottom;if(safe<1.0&&host.window)safe=host.window.safeAreaInsets.bottom;
-    UIVisualEffectView*glass=GlassForHost(host,NO);if(glass){CGFloat h=MIN(72.0,MAX(64.0,host.bounds.size.height-safe+10.0));glass.frame=CGRectMake(8.0,MAX(0.0,(host.bounds.size.height-safe-h)/2.0),MAX(0.0,host.bounds.size.width-16.0),h);glass.layer.cornerRadius=h/2;glass.layer.masksToBounds=YES;[host sendSubviewToBack:glass];}
+    UIVisualEffectView*glass=ClearGlassForHost(host);if(glass){CGFloat h=MIN(72.0,MAX(64.0,host.bounds.size.height-safe+10.0));glass.frame=CGRectMake(8.0,MAX(0.0,(host.bounds.size.height-safe-h)/2.0),MAX(0.0,host.bounds.size.width-16.0),h);glass.layer.cornerRadius=h/2;glass.layer.masksToBounds=YES;[host sendSubviewToBack:glass];}
     UIView *app=host.superview; if(app)[app bringSubviewToFront:host];
     host.clipsToBounds=NO; InstallNativeTabBar(host);
 }
