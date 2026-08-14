@@ -5,16 +5,18 @@
 static const void *kYTGlassKey = &kYTGlassKey;
 static const void *kYTNativeTabKey = &kYTNativeTabKey;
 static const void *kYTNativeDelegateKey = &kYTNativeDelegateKey;
+static const void *kYTNativeControllerKey = &kYTNativeControllerKey;
 
-@interface YTGNativeTabDelegate : NSObject <UITabBarDelegate>
+@interface YTGNativeTabDelegate : NSObject <UITabBarControllerDelegate>
 @property(nonatomic,weak) UIView *pivot;
 @property(nonatomic,strong) NSArray<UIView*> *pivotItems;
+@property(nonatomic) BOOL syncing;
 @end
 @implementation YTGNativeTabDelegate
-- (void)tabBar:(UITabBar*)tabBar didSelectItem:(UITabBarItem*)item {
-    NSInteger i=item.tag; if(i<0||i>=(NSInteger)self.pivotItems.count)return;
-    UIView *original=self.pivotItems[i];
-    SEL tap=sel_registerName("didTapButton"); SEL doTap=sel_registerName("doTap");
+- (void)tabBarController:(UITabBarController*)controller didSelectViewController:(UIViewController*)viewController {
+    if(self.syncing)return; NSInteger i=controller.selectedIndex;
+    if(i<0||i>=(NSInteger)self.pivotItems.count)return;
+    UIView *original=self.pivotItems[i]; SEL tap=sel_registerName("didTapButton"); SEL doTap=sel_registerName("doTap");
     if([original respondsToSelector:tap])((void(*)(id,SEL))objc_msgSend)(original,tap);
     else if([original respondsToSelector:doTap])((void(*)(id,SEL))objc_msgSend)(original,doTap);
 }
@@ -212,30 +214,38 @@ static void CollectPivotItems(UIView *v,NSMutableArray<UIView*> *out) {
     for(UIView *s in v.subviews)CollectPivotItems(s,out);
 }
 
+static UIViewController *OwningViewController(UIView *v) {
+    for(UIResponder *r=v;r;r=r.nextResponder)if([r isKindOfClass:UIViewController.class])return (UIViewController*)r;
+    return nil;
+}
+
 static void InstallNativeTabBar(UIView *pivot) {
     NSMutableArray<UIView*> *pivotItems=[NSMutableArray array]; CollectPivotItems(pivot,pivotItems);
     [pivotItems sortUsingComparator:^NSComparisonResult(UIView*a,UIView*b){CGRect ar=[a convertRect:a.bounds toView:pivot],br=[b convertRect:b.bounds toView:pivot];return CGRectGetMinX(ar)<CGRectGetMinX(br)?NSOrderedAscending:NSOrderedDescending;}];
     if(pivotItems.count<2)return;
-    UITabBar *bar=objc_getAssociatedObject(pivot,kYTNativeTabKey);
+    UITabBarController *controller=objc_getAssociatedObject(pivot,kYTNativeControllerKey);
     YTGNativeTabDelegate *delegate=objc_getAssociatedObject(pivot,kYTNativeDelegateKey);
-    if(!bar){
-        bar=[[UITabBar alloc]initWithFrame:pivot.bounds]; bar.translucent=YES; bar.backgroundColor=UIColor.clearColor; bar.opaque=NO;
-        UITabBarAppearance *ap=[UITabBarAppearance new]; [ap configureWithTransparentBackground]; ap.backgroundColor=UIColor.clearColor; ap.shadowColor=UIColor.clearColor; ap.backgroundEffect=NewNativeGlass(NO);
-        bar.standardAppearance=ap; if([bar respondsToSelector:@selector(setScrollEdgeAppearance:)])bar.scrollEdgeAppearance=ap;
-        delegate=[YTGNativeTabDelegate new]; delegate.pivot=pivot; bar.delegate=delegate;
-        [pivot addSubview:bar]; objc_setAssociatedObject(pivot,kYTNativeTabKey,bar,OBJC_ASSOCIATION_RETAIN_NONATOMIC); objc_setAssociatedObject(pivot,kYTNativeDelegateKey,delegate,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if(!controller){
+        controller=[UITabBarController new]; delegate=[YTGNativeTabDelegate new]; delegate.pivot=pivot; controller.delegate=delegate;
+        UIViewController *owner=OwningViewController(pivot); if(owner){[owner addChildViewController:controller];}
+        controller.view.frame=pivot.bounds; controller.view.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight; controller.view.backgroundColor=UIColor.clearColor;
+        [pivot addSubview:controller.view]; if(owner)[controller didMoveToParentViewController:owner]; [controller.view setNeedsLayout]; [controller.view layoutIfNeeded];
+        UITabBar *bar=controller.tabBar;
+        objc_setAssociatedObject(pivot,kYTNativeControllerKey,controller,OBJC_ASSOCIATION_RETAIN_NONATOMIC); objc_setAssociatedObject(pivot,kYTNativeTabKey,bar,OBJC_ASSOCIATION_ASSIGN); objc_setAssociatedObject(pivot,kYTNativeDelegateKey,delegate,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    NSMutableArray *items=[NSMutableArray array]; NSInteger selected=NSNotFound;
+    NSMutableArray *controllers=[NSMutableArray array]; NSInteger selected=NSNotFound;
     for(NSUInteger i=0;i<pivotItems.count;i++){
         UIView *original=pivotItems[i]; UIButton*b=ButtonInPivotItem(original); UIImage *image=b.imageView.image; NSString *title=b.currentTitle?:b.titleLabel.text?:@"";
         BOOL avatar=[title isEqualToString:@"我"]||[title localizedCaseInsensitiveContainsString:@"you"];
         UIImageRenderingMode mode=avatar?UIImageRenderingModeAlwaysOriginal:UIImageRenderingModeAlwaysTemplate;
-        UITabBarItem *item=[[UITabBarItem alloc]initWithTitle:title image:[image imageWithRenderingMode:mode] tag:(NSInteger)i]; item.selectedImage=[image imageWithRenderingMode:mode]; [items addObject:item];
+        UIViewController *vc=[UIViewController new]; vc.view.backgroundColor=UIColor.clearColor;
+        vc.tabBarItem=[[UITabBarItem alloc]initWithTitle:title image:[image imageWithRenderingMode:mode] tag:(NSInteger)i]; vc.tabBarItem.selectedImage=[image imageWithRenderingMode:mode]; [controllers addObject:vc];
         SEL selectedSEL=sel_registerName("selected"); if([original respondsToSelector:selectedSEL]&&((BOOL(*)(id,SEL))objc_msgSend)(original,selectedSEL))selected=i;
         original.alpha=.01; original.userInteractionEnabled=NO;
     }
-    delegate.pivotItems=pivotItems; bar.items=items; if(selected!=NSNotFound)bar.selectedItem=items[selected];
-    bar.frame=pivot.bounds; bar.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight; [pivot bringSubviewToFront:bar];
+    delegate.pivotItems=pivotItems; delegate.syncing=YES; controller.viewControllers=controllers; if(selected!=NSNotFound)controller.selectedIndex=selected; delegate.syncing=NO;
+    controller.view.frame=pivot.bounds; controller.view.backgroundColor=UIColor.clearColor;
+    [controller.view setNeedsLayout]; [controller.view layoutIfNeeded]; [pivot bringSubviewToFront:controller.view];
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
