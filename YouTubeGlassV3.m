@@ -236,6 +236,20 @@ static void ClearControllerLayers(UIView *v,UITabBar *bar){
     for(UIView*s in v.subviews)ClearControllerLayers(s,bar);
 }
 
+static BOOL WithinSelectionContainer(UIView*v){for(UIView*p=v;p;p=p.superview)if([NSStringFromClass(p.class)containsString:@"FloatingTabBarSelectionContainerView"])return YES;return NO;}
+static void StripFullWidthSystemBackdrop(UIView*v){
+    NSString*n=NSStringFromClass(v.class);
+    if([n containsString:@"UITabBarGlassBackground"]){v.hidden=YES;v.alpha=0;return;}
+    if([n containsString:@"UIFloatingTabBar"]){
+        for(NSString*k in @[@"backgroundView",@"backgroundCaptureView",@"backdropCaptureView"]){@try{id x=[v valueForKey:k];if([x isKindOfClass:UIView.class]&&!WithinSelectionContainer(x)){UIView*b=x;b.hidden=YES;b.alpha=0;b.backgroundColor=UIColor.clearColor;}}@catch(__unused id e){}}
+    }
+    if([v isKindOfClass:UIVisualEffectView.class]&&!WithinSelectionContainer(v)){
+        BOOL floating=NO;for(UIView*p=v.superview;p;p=p.superview)if([NSStringFromClass(p.class)containsString:@"UIFloatingTabBar"]){floating=YES;break;}
+        if(floating){v.hidden=YES;v.alpha=0;return;}
+    }
+    for(UIView*s in v.subviews)StripFullWidthSystemBackdrop(s);
+}
+
 static void InstallNativeTabBar(UIView *pivot) {
     NSMutableArray<UIView*> *pivotItems=[NSMutableArray array]; CollectPivotItems(pivot,pivotItems);
     [pivotItems sortUsingComparator:^NSComparisonResult(UIView*a,UIView*b){CGRect ar=[a convertRect:a.bounds toView:pivot],br=[b convertRect:b.bounds toView:pivot];return CGRectGetMinX(ar)<CGRectGetMinX(br)?NSOrderedAscending:NSOrderedDescending;}];
@@ -262,7 +276,7 @@ static void InstallNativeTabBar(UIView *pivot) {
     }
     delegate.pivotItems=pivotItems; delegate.syncing=YES; controller.viewControllers=controllers; if(selected!=NSNotFound)controller.selectedIndex=selected; delegate.syncing=NO;
     UIView *app=pivot.superview;YTGPassThroughView*wrapper=objc_getAssociatedObject(pivot,kYTNativeWrapperKey);wrapper.frame=app.bounds;wrapper.hidden=pivot.hidden||CGRectGetMinY(pivot.frame)>=app.bounds.size.height-1;
-    controller.view.frame=wrapper.bounds;UITabBar*bar=controller.tabBar;wrapper.tabBar=bar;ClearControllerLayers(controller.view,bar);
+    controller.view.frame=wrapper.bounds;UITabBar*bar=controller.tabBar;wrapper.tabBar=bar;ClearControllerLayers(controller.view,bar);StripFullWidthSystemBackdrop(bar);
     for(UIViewController*vc in controller.viewControllers){vc.view.backgroundColor=UIColor.clearColor;vc.view.opaque=NO;}
     [controller.view setNeedsLayout];[controller.view layoutIfNeeded];[app bringSubviewToFront:wrapper];
 }
@@ -271,7 +285,8 @@ static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
     host.transform=CGAffineTransformIdentity;
     ExtendRealFeedUnderPivot(host);
     ClearSurface(host); ClearShortAncestors(host,260.0); ClearBottomBarHierarchy(host);
-    UIView *oldGlass=objc_getAssociatedObject(host,kYTGlassKey); if(oldGlass){[oldGlass removeFromSuperview];objc_setAssociatedObject(host,kYTGlassKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
+    CGFloat safe=host.safeAreaInsets.bottom;if(safe<1.0&&host.window)safe=host.window.safeAreaInsets.bottom;
+    UIVisualEffectView*glass=GlassForHost(host,NO);if(glass){CGFloat h=MIN(72.0,MAX(64.0,host.bounds.size.height-safe+10.0));glass.frame=CGRectMake(8.0,MAX(0.0,(host.bounds.size.height-safe-h)/2.0),MAX(0.0,host.bounds.size.width-16.0),h);glass.layer.cornerRadius=h/2;glass.layer.masksToBounds=YES;[host sendSubviewToBack:glass];}
     UIView *app=host.superview; if(app)[app bringSubviewToFront:host];
     host.clipsToBounds=NO; InstallNativeTabBar(host);
 }
