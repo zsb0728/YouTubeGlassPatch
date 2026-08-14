@@ -6,6 +6,10 @@ static const void *kYTGlassKey = &kYTGlassKey;
 static const void *kYTBackdropKey = &kYTBackdropKey;
 static const void *kYTCaptureTimeKey = &kYTCaptureTimeKey;
 static BOOL gCapturingBackdrop = NO;
+static BOOL gRefreshScheduled = NO;
+static NSHashTable<UIView*> *gBackdropHosts;
+static IMP gSetOffsetIMP = NULL;
+static IMP gSetOffsetAnimatedIMP = NULL;
 typedef NS_ENUM(NSInteger, YTGKind) { YTGKindPivot, YTGKindChip, YTGKindChipBar, YTGKindHeader };
 typedef struct { Class cls; IMP original; YTGKind kind; } YTGHook;
 static YTGHook gHooks[12]; static int gHookCount = 0;
@@ -126,6 +130,8 @@ static UIImageView *BackdropForHost(UIView *host) {
 }
 
 static void UpdateSampledBackdrop(UIView *host, BOOL sampleAbove) {
+    if(!gBackdropHosts)gBackdropHosts=[NSHashTable weakObjectsHashTable];
+    [gBackdropHosts addObject:host];
     if(gCapturingBackdrop || !host.window || host.bounds.size.width<10 || host.bounds.size.height<10)return;
     CFTimeInterval now=CACurrentMediaTime(); NSNumber *last=objc_getAssociatedObject(host,kYTCaptureTimeKey);
     if(last && now-last.doubleValue<0.16)return;
@@ -245,6 +251,41 @@ static void ScanWindows(void) {
     for(UIScene *scene in UIApplication.sharedApplication.connectedScenes) if([scene isKindOfClass:UIWindowScene.class]) for(UIWindow *w in ((UIWindowScene*)scene).windows)Scan(w);
 }
 
+static void RefreshBackdropHosts(void) {
+    for(UIView *host in gBackdropHosts.allObjects) {
+        if(!host.window || host.hidden || host.alpha<.01)continue;
+        NSString *n=NSStringFromClass(host.class);
+        UpdateSampledBackdrop(host,[n containsString:@"PivotBar"]);
+    }
+}
+
+static void ScheduleBackdropRefresh(void) {
+    if(gCapturingBackdrop || gRefreshScheduled)return;
+    gRefreshScheduled=YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.10*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+        gRefreshScheduled=NO; RefreshBackdropHosts();
+    });
+}
+
+static void GlassSetContentOffset(UIScrollView *self,SEL cmd,CGPoint p) {
+    ((void(*)(id,SEL,CGPoint))gSetOffsetIMP)(self,cmd,p); ScheduleBackdropRefresh();
+}
+static void GlassSetContentOffsetAnimated(UIScrollView *self,SEL cmd,CGPoint p,BOOL animated) {
+    ((void(*)(id,SEL,CGPoint,BOOL))gSetOffsetAnimatedIMP)(self,cmd,p,animated); ScheduleBackdropRefresh();
+}
+
+static void InstallScrollRefresh(void) {
+    Method m=class_getInstanceMethod(UIScrollView.class,@selector(setContentOffset:));
+    gSetOffsetIMP=method_getImplementation(m); method_setImplementation(m,(IMP)GlassSetContentOffset);
+    Method a=class_getInstanceMethod(UIScrollView.class,@selector(setContentOffset:animated:));
+    gSetOffsetAnimatedIMP=method_getImplementation(a); method_setImplementation(a,(IMP)GlassSetContentOffsetAnimated);
+}
+
+static void LifecyclePulse(void) {
+    if(UIApplication.sharedApplication.applicationState==UIApplicationStateActive){ ScanWindows(); RefreshBackdropHosts(); }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.75*NSEC_PER_SEC)),dispatch_get_main_queue(),^{LifecyclePulse();});
+}
+
 __attribute__((constructor)) static void StartYouTubeGlassV3(void) {
     dispatch_async(dispatch_get_main_queue(),^{
         InstallHook("YTPivotBarView",YTGKindPivot);
@@ -253,7 +294,8 @@ __attribute__((constructor)) static void StartYouTubeGlassV3(void) {
         InstallHook("YTGhostChipCell",YTGKindChip);
         InstallHook("YTFilterChipBarView",YTGKindChipBar);
         InstallHook("YTHeaderView",YTGKindHeader);
-        [[NSNotificationCenter defaultCenter]addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification*n){ScanWindows();}];
+        InstallScrollRefresh(); LifecyclePulse();
+        [[NSNotificationCenter defaultCenter]addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification*n){ScanWindows(); ScheduleBackdropRefresh();}];
         for(int i=1;i<=24;i++)dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(i*.25*NSEC_PER_SEC)),dispatch_get_main_queue(),^{ScanWindows();});
     });
 }
