@@ -118,12 +118,41 @@ static void ExtendFeedBehindChipBar(UIView *host) {
 
 static void UpdateSampledBackdrop(UIView *host, BOOL sampleAbove) { (void)host; (void)sampleAbove; }
 
+static void FindMainCollections(UIView *v,UIView *app,UIView *pivot,NSMutableArray<UIScrollView*> *out) {
+    NSString *n=NSStringFromClass(v.class);
+    if([v isKindOfClass:UIScrollView.class] && [n isEqualToString:@"YTAsyncCollectionView"]) {
+        CGRect r=[v convertRect:v.bounds toView:app];
+        if(r.size.width>app.bounds.size.width*.9 && r.size.height>500.0 && CGRectGetMinY(r)<20.0 && CGRectGetMaxY(r)<=CGRectGetMinY(pivot.frame)+2.0) [out addObject:(UIScrollView*)v];
+    }
+    for(UIView *s in v.subviews) FindMainCollections(s,app,pivot,out);
+}
+
+static void ExtendRealFeedUnderPivot(UIView *pivot) {
+    UIView *app=pivot.superview; if(![NSStringFromClass(app.class)isEqualToString:@"YTAppView"])return;
+    if(CGRectGetMinY(pivot.frame)>=app.bounds.size.height-1.0)return;
+    NSMutableArray *feeds=[NSMutableArray array];
+    for(UIView *s in app.subviews) if(s!=pivot)FindMainCollections(s,app,pivot,feeds);
+    UIScrollView *best=nil; CGFloat bestGap=CGFLOAT_MAX;
+    for(UIScrollView *f in feeds){CGRect r=[f convertRect:f.bounds toView:app];CGFloat gap=fabs(CGRectGetMaxY(r)-CGRectGetMinY(pivot.frame));if(gap<bestGap){bestGap=gap;best=f;}}
+    if(!best||bestGap>4.0)return;
+    UIView *node=best;
+    while(node && node!=app){
+        UIView *superview=node.superview; if(!superview)break;
+        CGPoint bottom=[app convertPoint:CGPointMake(0,CGRectGetMaxY(app.bounds)) toView:superview];
+        CGRect f=node.frame; CGFloat newHeight=bottom.y-CGRectGetMinY(f);
+        if(newHeight>f.size.height){f.size.height=newHeight;node.frame=f;}
+        node.clipsToBounds=NO; node=superview;
+    }
+    UIEdgeInsets in=best.contentInset; in.bottom=MAX(in.bottom,pivot.bounds.size.height); best.contentInset=in;
+    UIEdgeInsets si=best.scrollIndicatorInsets; si.bottom=MAX(si.bottom,pivot.bounds.size.height); best.scrollIndicatorInsets=si;
+}
+
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
-    UpdateSampledBackdrop(host,YES);
+    host.transform=CGAffineTransformIdentity;
+    ExtendRealFeedUnderPivot(host);
     ClearSurface(host); ClearStructuralBackdrops(host,5); ClearShortAncestors(host,260.0); ClearBottomBarHierarchy(host);
+    UIView *app=host.superview; if(app)[app bringSubviewToFront:host];
     CGFloat safe=host.safeAreaInsets.bottom; if(safe<1.0&&host.window)safe=host.window.safeAreaInsets.bottom;
-    CGFloat lift=MAX(34.0,safe+12.0);
-    host.transform=CGAffineTransformMakeTranslation(0,-lift);
     UIVisualEffectView *ev=GlassForHost(host,YES); if(!ev)return;
     ev.alpha=1.0; id effect=ev.effect; SEL setTint=sel_registerName("setTintColor:");
     if([effect respondsToSelector:setTint])((void(*)(id,SEL,id))objc_msgSend)(effect,setTint,UIColor.clearColor);
