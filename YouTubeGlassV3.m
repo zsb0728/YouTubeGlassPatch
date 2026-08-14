@@ -3,10 +3,13 @@
 #import <objc/message.h>
 
 static const void *kYTGlassKey = &kYTGlassKey;
-static const void *kYTLensKey = &kYTLensKey;
+static const void *kYTSelectionContainerKey = &kYTSelectionContainerKey;
 static const void *kYTLensDriverKey = &kYTLensDriverKey;
 static const void *kYTLensPanKey = &kYTLensPanKey;
+static CGRect gPivotGlassFrame = {{0,0},{0,0}};
 static CGPoint PivotVisualCenter(UIView *item,UIView *pivot);
+static UIView *PivotButton(UIView *item);
+static void SetSelectionFrame(UIView *container,CGRect frame){SEL s=sel_registerName("setSelectionViewFrame:");if([container respondsToSelector:s])((void(*)(id,SEL,CGRect))objc_msgSend)(container,s,frame);SEL u=sel_registerName("_updateSelectionViewFrame");if([container respondsToSelector:u])((void(*)(id,SEL))objc_msgSend)(container,u);}
 
 @interface YTGLensDriver : NSObject
 @property(nonatomic,weak) UIView*pivot;
@@ -19,11 +22,12 @@ static void TapPivotItem(UIView*item){SEL a=sel_registerName("didTapButton"),b=s
 
 @implementation YTGLensDriver
 - (void)pan:(UIPanGestureRecognizer*)g{
-    UIView*p=self.pivot;UIView*lens=objc_getAssociatedObject(p,kYTLensKey);if(!p||!lens||!self.items.count)return;
+    UIView*p=self.pivot;UIView*container=objc_getAssociatedObject(p,kYTSelectionContainerKey);if(!p||!container||!self.items.count)return;
     if(g.state==UIGestureRecognizerStateBegan)self.dragging=YES;
-    CGPoint q=[g locationInView:p];CGFloat x=MAX(34.0,MIN(p.bounds.size.width-34.0,q.x));CGRect f=lens.frame;f.origin.x=x-f.size.width/2;lens.frame=f;
-    SEL lifted=sel_registerName("setLifted:animated:alongsideAnimations:completion:");if([lens respondsToSelector:lifted]&&g.state==UIGestureRecognizerStateBegan)((void(*)(id,SEL,BOOL,BOOL,id,id))objc_msgSend)(lens,lifted,YES,YES,nil,nil);
-    if(g.state==UIGestureRecognizerStateEnded||g.state==UIGestureRecognizerStateCancelled){NSInteger best=0;CGFloat d0=CGFLOAT_MAX;for(NSUInteger i=0;i<self.items.count;i++){UIView*it=self.items[i];CGPoint c=PivotVisualCenter(it,p);CGFloat d=fabs(c.x-x);if(d<d0){d0=d;best=i;}}UIView*it=self.items[best];CGPoint c=PivotVisualCenter(it,p);[UIView animateWithDuration:.32 delay:0 usingSpringWithDamping:.75 initialSpringVelocity:0 options:UIViewAnimationOptionBeginFromCurrentState animations:^{CGRect z=lens.frame;z.origin.x=c.x-z.size.width/2;lens.frame=z;}completion:^(__unused BOOL ok){self.dragging=NO;TapPivotItem(it);if([lens respondsToSelector:lifted])((void(*)(id,SEL,BOOL,BOOL,id,id))objc_msgSend)(lens,lifted,NO,YES,nil,nil);}];}
+    CGPoint q=[g locationInView:p];CGFloat x=MAX(36.0,MIN(p.bounds.size.width-36.0,q.x));CGRect sf=CGRectMake(x-36,CGRectGetMidY(gPivotGlassFrame)-30,72,60);SetSelectionFrame(container,sf);
+    id lens=nil;SEL lensSel=sel_registerName("liquidLensView");if([container respondsToSelector:lensSel])lens=((id(*)(id,SEL))objc_msgSend)(container,lensSel);
+    SEL lifted=sel_registerName("setLifted:animated:alongsideAnimations:completion:");if(lens&&[lens respondsToSelector:lifted]&&g.state==UIGestureRecognizerStateBegan)((void(*)(id,SEL,BOOL,BOOL,id,id))objc_msgSend)(lens,lifted,YES,YES,nil,nil);
+    if(g.state==UIGestureRecognizerStateEnded||g.state==UIGestureRecognizerStateCancelled){NSInteger best=0;CGFloat d0=CGFLOAT_MAX;for(NSUInteger i=0;i<self.items.count;i++){UIView*it=self.items[i];CGPoint c=PivotVisualCenter(it,p);CGFloat d=fabs(c.x-x);if(d<d0){d0=d;best=i;}}UIView*it=self.items[best];CGPoint c=PivotVisualCenter(it,p);UIView*button=PivotButton(it);SEL content=sel_registerName("setLiftedContentView:");if(button&&[container respondsToSelector:content])((void(*)(id,SEL,id))objc_msgSend)(container,content,button);[UIView animateWithDuration:.32 delay:0 usingSpringWithDamping:.76 initialSpringVelocity:0 options:UIViewAnimationOptionBeginFromCurrentState animations:^{SetSelectionFrame(container,CGRectMake(c.x-36,CGRectGetMidY(gPivotGlassFrame)-30,72,60));}completion:^(__unused BOOL ok){self.dragging=NO;TapPivotItem(it);if(lens&&[lens respondsToSelector:lifted])((void(*)(id,SEL,BOOL,BOOL,id,id))objc_msgSend)(lens,lifted,NO,YES,nil,nil);}];}
 }
 @end
 
@@ -177,7 +181,6 @@ static BOOL ContainsPivotItem(UIView *v) {
     return NO;
 }
 
-static CGRect gPivotGlassFrame = {{0,0},{0,0}};
 static UIView *PivotButton(UIView *item){for(UIView*s in item.subviews)if([NSStringFromClass(s.class)isEqualToString:@"YTQTMButton"]&&!s.hidden&&s.bounds.size.width>20)return s;return nil;}
 static CGPoint PivotVisualCenter(UIView *item,UIView *pivot){UIView*b=PivotButton(item);return b?[b.superview convertPoint:b.center toView:pivot]:[item.superview convertPoint:item.center toView:pivot];}
 
@@ -215,10 +218,11 @@ static void LensItems(UIView*v,NSMutableArray*out){if([NSStringFromClass(v.class
 static BOOL LensItemSelected(UIView*v){SEL s=sel_registerName("selected");return[v respondsToSelector:s]?((BOOL(*)(id,SEL))objc_msgSend)(v,s):NO;}
 
 static void SetupSystemLiquidLens(UIView*host,UIVisualEffectView*base,CGRect glassFrame){
-    NSMutableArray*items=[NSMutableArray array];LensItems(host,items);[items sortUsingComparator:^NSComparisonResult(UIView*a,UIView*b){CGPoint x=[a.superview convertPoint:a.center toView:host],y=[b.superview convertPoint:b.center toView:host];return x.x<y.x?NSOrderedAscending:NSOrderedDescending;}];if(items.count<2)return;
-    UIView*lens=objc_getAssociatedObject(host,kYTLensKey);if(!lens){Class c=NSClassFromString(@"_UILiquidLensView");if(!c)return;lens=[[c alloc]initWithFrame:CGRectZero];lens.userInteractionEnabled=NO;lens.backgroundColor=UIColor.clearColor;SEL warp=sel_registerName("setWarpsContentBelow:");if([lens respondsToSelector:warp])((void(*)(id,SEL,BOOL))objc_msgSend)(lens,warp,YES);[host insertSubview:lens aboveSubview:base];objc_setAssociatedObject(host,kYTLensKey,lens,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
-    UIView*selected=items.firstObject;for(UIView*i in items)if(LensItemSelected(i)){selected=i;break;}YTGLensDriver*existing=objc_getAssociatedObject(host,kYTLensDriverKey);if(!existing.dragging){CGPoint c=PivotVisualCenter(selected,host);lens.frame=CGRectMake(c.x-34,CGRectGetMidY(glassFrame)-30,68,60);}lens.layer.cornerRadius=30;
-    YTGLensDriver*d=objc_getAssociatedObject(host,kYTLensDriverKey);if(!d){d=[YTGLensDriver new];d.pivot=host;UIPanGestureRecognizer*g=[[UIPanGestureRecognizer alloc]initWithTarget:d action:@selector(pan:)];g.cancelsTouchesInView=NO;[host addGestureRecognizer:g];objc_setAssociatedObject(host,kYTLensPanKey,g,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(host,kYTLensDriverKey,d,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}d.items=items;
+    NSMutableArray*items=[NSMutableArray array];LensItems(host,items);[items sortUsingComparator:^NSComparisonResult(UIView*a,UIView*b){CGPoint x=PivotVisualCenter(a,host),y=PivotVisualCenter(b,host);return x.x<y.x?NSOrderedAscending:NSOrderedDescending;}];if(items.count<2)return;
+    UIView*container=objc_getAssociatedObject(host,kYTSelectionContainerKey);if(!container){Class c=NSClassFromString(@"_UIFloatingTabBarSelectionContainerView");if(!c)return;container=[[c alloc]initWithFrame:host.bounds];container.userInteractionEnabled=NO;container.backgroundColor=UIColor.clearColor;[host insertSubview:container aboveSubview:base];objc_setAssociatedObject(host,kYTSelectionContainerKey,container,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}container.frame=host.bounds;
+    id lens=nil;SEL lensSel=sel_registerName("liquidLensView");if([container respondsToSelector:lensSel])lens=((id(*)(id,SEL))objc_msgSend)(container,lensSel);SEL warp=sel_registerName("setWarpsContentBelow:");if(lens&&[lens respondsToSelector:warp])((void(*)(id,SEL,BOOL))objc_msgSend)(lens,warp,YES);
+    UIView*selected=items.firstObject;for(UIView*i in items)if(LensItemSelected(i)){selected=i;break;}YTGLensDriver*existing=objc_getAssociatedObject(host,kYTLensDriverKey);if(!existing.dragging){CGPoint c=PivotVisualCenter(selected,host);SetSelectionFrame(container,CGRectMake(c.x-36,CGRectGetMidY(glassFrame)-30,72,60));UIView*button=PivotButton(selected);SEL content=sel_registerName("setLiftedContentView:");if(button&&[container respondsToSelector:content])((void(*)(id,SEL,id))objc_msgSend)(container,content,button);}
+    YTGLensDriver*d=existing;if(!d){d=[YTGLensDriver new];d.pivot=host;UIPanGestureRecognizer*g=[[UIPanGestureRecognizer alloc]initWithTarget:d action:@selector(pan:)];g.cancelsTouchesInView=NO;[host addGestureRecognizer:g];objc_setAssociatedObject(host,kYTLensPanKey,g,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(host,kYTLensDriverKey,d,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}d.items=items;
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
