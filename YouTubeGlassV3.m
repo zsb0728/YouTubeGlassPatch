@@ -219,16 +219,16 @@ static void InstallNativeTabBar(UIView *pivot) {
     UITabBar *bar=objc_getAssociatedObject(pivot,kYTNativeTabKey);
     YTGNativeTabDelegate *delegate=objc_getAssociatedObject(pivot,kYTNativeDelegateKey);
     if(!bar){
-        bar=[[UITabBar alloc]initWithFrame:pivot.bounds]; bar.translucent=YES; bar.backgroundColor=UIColor.clearColor; bar.opaque=NO; bar.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;
-        UITabBarAppearance *ap=[UITabBarAppearance new]; [ap configureWithTransparentBackground]; ap.backgroundColor=UIColor.clearColor; ap.shadowColor=UIColor.clearColor; ap.backgroundEffect=nil;
-        bar.standardAppearance=ap; if([bar respondsToSelector:@selector(setScrollEdgeAppearance:)])bar.scrollEdgeAppearance=ap;
+        bar=[[UITabBar alloc]initWithFrame:pivot.bounds];
         delegate=[YTGNativeTabDelegate new]; delegate.pivot=pivot; bar.delegate=delegate;
         [pivot addSubview:bar]; objc_setAssociatedObject(pivot,kYTNativeTabKey,bar,OBJC_ASSOCIATION_RETAIN_NONATOMIC); objc_setAssociatedObject(pivot,kYTNativeDelegateKey,delegate,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     NSMutableArray *items=[NSMutableArray array]; NSInteger selected=NSNotFound;
     for(NSUInteger i=0;i<pivotItems.count;i++){
         UIView *original=pivotItems[i]; UIButton*b=ButtonInPivotItem(original); UIImage *image=b.imageView.image; NSString *title=b.currentTitle?:b.titleLabel.text?:@"";
-        UITabBarItem *item=[[UITabBarItem alloc]initWithTitle:title image:[image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate] tag:(NSInteger)i]; [items addObject:item];
+        BOOL avatar=[title isEqualToString:@"我"]||[title localizedCaseInsensitiveContainsString:@"you"];
+        UIImageRenderingMode mode=avatar?UIImageRenderingModeAlwaysOriginal:UIImageRenderingModeAlwaysTemplate;
+        UITabBarItem *item=[[UITabBarItem alloc]initWithTitle:title image:[image imageWithRenderingMode:mode] tag:(NSInteger)i]; item.selectedImage=[image imageWithRenderingMode:mode]; [items addObject:item];
         SEL selectedSEL=sel_registerName("selected"); if([original respondsToSelector:selectedSEL]&&((BOOL(*)(id,SEL))objc_msgSend)(original,selectedSEL))selected=i;
         original.alpha=.01; original.userInteractionEnabled=NO;
     }
