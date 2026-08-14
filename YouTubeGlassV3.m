@@ -11,6 +11,7 @@ static const void *kYTPortalKey = &kYTPortalKey;
 static const void *kYTPortalSourceKey = &kYTPortalSourceKey;
 static const void *kYTItemSignatureKey = &kYTItemSignatureKey;
 static const void *kYTFeedKey = &kYTFeedKey;
+static const void *kYTConfiguredKey = &kYTConfiguredKey;
 
 @interface YTGWeakBox : NSObject
 @property(nonatomic,weak) id value;
@@ -21,9 +22,15 @@ static __weak UIView *gYTPivot;
 static __weak UIView *gYTWrapper;
 static NSHashTable<UIView*> *gYTWatchViews;
 static NSInteger gYTWatchControllerCount;
+static BOOL gYTReturningFromWatch;
+static NSInteger gYTReturnGeneration;
+static __weak UIView *gYTReturnCandidate;
+static NSInteger gYTReturnCandidateHits;
 static const void *kYTWatchActiveKey = &kYTWatchActiveKey;
 static IMP gYTWatchWillAppearIMP;
 static IMP gYTWatchDidDisappearIMP;
+static void ScheduleSafeOverlayRebuild(void);
+static void InstallNativeTabBar(UIView *pivot);
 
 @interface YTGPassThroughView : UIView
 @property(nonatomic,weak) UITabBar *tabBar;
@@ -274,7 +281,7 @@ static BOOL WatchIsActive(void){
 
 static void UpdateSystemTabVisibility(void){
     UIView*wrapper=gYTWrapper;if(!wrapper)return;
-    BOOL hidden=WatchIsActive();if(wrapper.hidden!=hidden)wrapper.hidden=hidden;
+    BOOL hidden=WatchIsActive()||gYTReturningFromWatch;if(wrapper.hidden!=hidden)wrapper.hidden=hidden;
 }
 
 static void WatchWillAppear(id self,SEL cmd,BOOL animated){
@@ -284,8 +291,11 @@ static void WatchWillAppear(id self,SEL cmd,BOOL animated){
 
 static void WatchDidDisappear(id self,SEL cmd,BOOL animated){
     if(gYTWatchDidDisappearIMP)((void(*)(id,SEL,BOOL))gYTWatchDidDisappearIMP)(self,cmd,animated);
-    if([objc_getAssociatedObject(self,kYTWatchActiveKey)boolValue]){objc_setAssociatedObject(self,kYTWatchActiveKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);gYTWatchControllerCount=MAX(0,gYTWatchControllerCount-1);}
-    UpdateSystemTabVisibility();
+    BOOL wasActive=[objc_getAssociatedObject(self,kYTWatchActiveKey)boolValue];if(!wasActive)return;
+    objc_setAssociatedObject(self,kYTWatchActiveKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);gYTWatchControllerCount=MAX(0,gYTWatchControllerCount-1);
+    gYTReturningFromWatch=YES;gYTReturnGeneration++;gYTReturnCandidate=nil;gYTReturnCandidateHits=0;
+    YTGWeakBox*feedBox=objc_getAssociatedObject(gYTPivot,kYTFeedKey);feedBox.value=nil;objc_setAssociatedObject(gYTPivot,kYTConfiguredKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UpdateSystemTabVisibility();ScheduleSafeOverlayRebuild();
 }
 
 static void InstallWatchControllerHooks(void){
@@ -294,7 +304,19 @@ static void InstallWatchControllerHooks(void){
     Method d=class_getInstanceMethod(cls,@selector(viewDidDisappear:));if(d){gYTWatchDidDisappearIMP=method_getImplementation(d);if(!class_addMethod(cls,@selector(viewDidDisappear:),(IMP)WatchDidDisappear,method_getTypeEncoding(d)))method_setImplementation(class_getInstanceMethod(cls,@selector(viewDidDisappear:)),(IMP)WatchDidDisappear);}
 }
 
+static BOOL ContainsStableFeed(UIView*v,UIView*app){
+    NSString*n=NSStringFromClass(v.class);
+    if([n isEqualToString:@"YTAsyncCollectionView"]&&v.window&&!v.hidden&&v.alpha>.05){CGRect r=CGRectIntersection([v convertRect:v.bounds toView:app],app.bounds);if(r.size.width>app.bounds.size.width*.85&&r.size.height>app.bounds.size.height*.45)return YES;}
+    for(UIView*s in v.subviews)if(ContainsStableFeed(s,app))return YES;return NO;
+}
+
+static UIView*StrictCurrentFeedSource(UIView*app,UIView*pivot,UIView*wrapper){
+    for(UIView*s in app.subviews.reverseObjectEnumerator){NSString*n=NSStringFromClass(s.class);if(s!=pivot&&s!=wrapper&&[n isEqualToString:@"UILayoutContainerView"]&&ViewIsActuallyVisible(s)&&ContainsStableFeed(s,app))return s;}
+    return nil;
+}
+
 static UIView *YouTubeContentSource(UIView*app,UIView*pivot,UIView*wrapper){
+    UIView*strict=StrictCurrentFeedSource(app,pivot,wrapper);if(strict)return strict;
     for(UIView*s in app.subviews){NSString*n=NSStringFromClass(s.class);if(s!=pivot&&s!=wrapper&&!s.hidden&&([n isEqualToString:@"UILayoutContainerView"]||[n containsString:@"NavigationTransitionView"])&&s.bounds.size.height>500)return s;}
     for(UIView*s in app.subviews)if(s!=pivot&&s!=wrapper&&!s.hidden&&s.bounds.size.width>app.bounds.size.width*.9&&s.bounds.size.height>500)return s;
     return nil;
@@ -313,6 +335,28 @@ static UIView *EnsurePortal(UIViewController*vc,UIView*source){
     if(source!=old){SEL setSource=sel_registerName("setSourceView:");if([portal respondsToSelector:setSource]){[CATransaction begin];[CATransaction setDisableActions:YES];((void(*)(id,SEL,id))objc_msgSend)(portal,setSource,source);[CATransaction commit];}if(!box){box=[YTGWeakBox new];objc_setAssociatedObject(vc,kYTPortalSourceKey,box,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}box.value=source;}
     if(!CGRectEqualToRect(portal.frame,vc.view.bounds))portal.frame=vc.view.bounds;
     return portal;
+}
+
+static void DestroySystemTabOverlay(UIView*pivot){
+    UITabBarController*controller=objc_getAssociatedObject(pivot,kYTNativeControllerKey);YTGPassThroughView*w=objc_getAssociatedObject(pivot,kYTNativeWrapperKey);
+    [controller willMoveToParentViewController:nil];[controller.view removeFromSuperview];[w removeFromSuperview];[controller removeFromParentViewController];
+    objc_setAssociatedObject(pivot,kYTNativeControllerKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(pivot,kYTNativeWrapperKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(pivot,kYTNativeTabKey,nil,OBJC_ASSOCIATION_ASSIGN);objc_setAssociatedObject(pivot,kYTNativeDelegateKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(pivot,kYTItemSignatureKey,nil,OBJC_ASSOCIATION_COPY_NONATOMIC);
+    gYTWrapper=nil;
+}
+
+static BOOL TrySafeOverlayRebuild(NSInteger generation){
+    if(generation!=gYTReturnGeneration||!gYTReturningFromWatch||WatchIsActive())return NO;
+    UIView*pivot=gYTPivot;UIView*app=pivot.superview;YTGPassThroughView*w=objc_getAssociatedObject(pivot,kYTNativeWrapperKey);if(!pivot||!app)return NO;
+    UIView*source=StrictCurrentFeedSource(app,pivot,w);if(!source){gYTReturnCandidate=nil;gYTReturnCandidateHits=0;return NO;}
+    if(source==gYTReturnCandidate)gYTReturnCandidateHits++;else{gYTReturnCandidate=source;gYTReturnCandidateHits=1;}
+    if(gYTReturnCandidateHits<2)return NO;
+    DestroySystemTabOverlay(pivot);[CATransaction begin];[CATransaction setDisableActions:YES];InstallNativeTabBar(pivot);[CATransaction commit];[CATransaction flush];
+    if(!gYTWrapper)return NO;gYTReturningFromWatch=NO;UpdateSystemTabVisibility();return YES;
+}
+
+static void ScheduleSafeOverlayRebuild(void){
+    NSInteger generation=gYTReturnGeneration;
+    for(NSNumber*d in @[@0.20,@0.36,@0.55,@0.80,@1.1,@1.5,@2.0,@3.0])dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(d.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(),^{TrySafeOverlayRebuild(generation);});
 }
 
 static void ClearControllerLayers(UIView *v,UITabBar *bar){
@@ -348,10 +392,10 @@ static void InstallNativeTabBar(UIView *pivot) {
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
-    ExtendRealFeedUnderPivot(host);
-    ClearSurface(host);ClearShortAncestors(host,260.0);ClearBottomBarHierarchy(host);
+    ExtendRealFeedUnderPivot(host);ClearSurface(host);ClearShortAncestors(host,260.0);
+    if(![objc_getAssociatedObject(host,kYTConfiguredKey)boolValue]){ClearBottomBarHierarchy(host);objc_setAssociatedObject(host,kYTConfiguredKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
     UIView*oldGlass=objc_getAssociatedObject(host,kYTGlassKey);if(oldGlass){[oldGlass removeFromSuperview];objc_setAssociatedObject(host,kYTGlassKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
-    if(host.clipsToBounds)host.clipsToBounds=NO;InstallNativeTabBar(host);
+    if(host.clipsToBounds)host.clipsToBounds=NO;if(gYTReturningFromWatch)return;InstallNativeTabBar(host);
 }
 
 static void TintGlass(UIVisualEffectView *ev, BOOL selected) { (void)ev; (void)selected; }
@@ -491,7 +535,6 @@ __attribute__((constructor)) static void StartYouTubeGlassV3(void) {
         InstallHook("YTFilterChipBarView",YTGKindChipBar);
         InstallHook("YTHeaderView",YTGKindHeader);
         InstallHook("YTSubheaderContainerView",YTGKindSubheader);
-        InstallHook("YTAsyncCollectionView",YTGKindAsyncCollection);
         InstallWatchHook("YTWatchView");
         InstallWatchHook("YTAppWatchContainer");
         InstallWatchHook("YTWatchLayerView");
