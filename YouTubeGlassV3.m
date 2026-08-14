@@ -244,7 +244,7 @@ static void InstallNativeTabBar(UIView *pivot) {
     YTGNativeTabDelegate *delegate=objc_getAssociatedObject(pivot,kYTNativeDelegateKey);
     if(!controller){
         controller=[UITabBarController new]; delegate=[YTGNativeTabDelegate new]; delegate.pivot=pivot; controller.delegate=delegate;
-        UIView *app=pivot.superview; UIViewController *owner=OwningViewController(pivot); if(owner)[owner addChildViewController:controller];
+        UIView *app=pivot.superview; UIViewController *owner=OwningViewController(app); if(owner)[owner addChildViewController:controller];
         YTGPassThroughView *wrapper=[[YTGPassThroughView alloc]initWithFrame:app.bounds];wrapper.backgroundColor=UIColor.clearColor;wrapper.opaque=NO;wrapper.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
         controller.view.frame=wrapper.bounds;controller.view.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;[wrapper addSubview:controller.view];[app addSubview:wrapper];if(owner)[controller didMoveToParentViewController:owner];
         UITabBar *bar=controller.tabBar;wrapper.tabBar=bar;ClearControllerLayers(controller.view,bar);
