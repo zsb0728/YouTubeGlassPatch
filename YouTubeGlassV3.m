@@ -7,6 +7,7 @@ static const void *kYTNativeTabKey = &kYTNativeTabKey;
 static const void *kYTNativeDelegateKey = &kYTNativeDelegateKey;
 static const void *kYTNativeControllerKey = &kYTNativeControllerKey;
 static const void *kYTNativeWrapperKey = &kYTNativeWrapperKey;
+static const void *kYTPortalKey = &kYTPortalKey;
 
 @interface YTGPassThroughView : UIView
 @property(nonatomic,weak) UITabBar *tabBar;
@@ -50,18 +51,9 @@ static id NewNativeGlass(BOOL interactive) API_AVAILABLE(ios(26.0)) {
     return effect;
 }
 
-static id NewClearGlass(BOOL interactive) API_AVAILABLE(ios(26.0)) {
-    Class cls=NSClassFromString(@"UIGlassEffect");if(!cls)return nil;id effect=nil;SEL f=sel_registerName("effectWithStyle:");
-    if([cls respondsToSelector:f])effect=((id(*)(id,SEL,NSInteger))objc_msgSend)(cls,f,1);
-    if(!effect){id obj=((id(*)(id,SEL))objc_msgSend)(cls,@selector(alloc));SEL i=sel_registerName("initWithStyle:");if([obj respondsToSelector:i])effect=((id(*)(id,SEL,NSInteger))objc_msgSend)(obj,i,1);}
-    SEL set=sel_registerName("setInteractive:");if(effect&&[effect respondsToSelector:set])((void(*)(id,SEL,BOOL))objc_msgSend)(effect,set,interactive);return effect;
-}
-
 static void ClearSurface(UIView *v) {
     if (!v) return; v.opaque = NO; v.backgroundColor = UIColor.clearColor; v.layer.backgroundColor = nil;
 }
-
-static UIVisualEffectView *ClearGlassForHost(UIView*host){UIVisualEffectView*ev=objc_getAssociatedObject(host,kYTGlassKey);if(!ev){ev=[[UIVisualEffectView alloc]initWithEffect:NewClearGlass(NO)];ev.userInteractionEnabled=NO;ev.clipsToBounds=YES;ev.layer.cornerCurve=kCACornerCurveContinuous;[host insertSubview:ev atIndex:0];objc_setAssociatedObject(host,kYTGlassKey,ev,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}else ev.effect=NewClearGlass(NO);return ev;}
 
 static UIVisualEffectView *GlassForHost(UIView *host, BOOL interactive) API_AVAILABLE(ios(26.0)) {
     UIVisualEffectView *ev = objc_getAssociatedObject(host,kYTGlassKey);
@@ -239,24 +231,24 @@ static UIViewController *OwningViewController(UIView *v) {
     return nil;
 }
 
+static UIView *YouTubeContentSource(UIView*app,UIView*pivot,UIView*wrapper){
+    for(UIView*s in app.subviews){NSString*n=NSStringFromClass(s.class);if(s!=pivot&&s!=wrapper&&!s.hidden&&([n isEqualToString:@"UILayoutContainerView"]||[n containsString:@"NavigationTransitionView"])&&s.bounds.size.height>500)return s;}
+    for(UIView*s in app.subviews)if(s!=pivot&&s!=wrapper&&!s.hidden&&s.bounds.size.width>app.bounds.size.width*.9&&s.bounds.size.height>500)return s;
+    return nil;
+}
+
+static UIView *EnsurePortal(UIViewController*vc,UIView*source){
+    if(!source)return nil;UIView*portal=objc_getAssociatedObject(vc,kYTPortalKey);Class c=NSClassFromString(@"_UIPortalView");if(!c)return nil;
+    if(!portal){SEL init=sel_registerName("initWithSourceView:");id obj=((id(*)(id,SEL))objc_msgSend)(c,@selector(alloc));portal=[obj respondsToSelector:init]?((id(*)(id,SEL,id))objc_msgSend)(obj,init,source):[[c alloc]initWithFrame:vc.view.bounds];portal.userInteractionEnabled=NO;[vc.view insertSubview:portal atIndex:0];objc_setAssociatedObject(vc,kYTPortalKey,portal,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
+    SEL setSource=sel_registerName("setSourceView:");if([portal respondsToSelector:setSource])((void(*)(id,SEL,id))objc_msgSend)(portal,setSource,source);
+    for(NSString*k in @[@"setAllowsBackdropGroups:",@"setMatchesPosition:",@"setMatchesTransform:",@"setMatchesAlpha:"]){SEL s=sel_registerName(k.UTF8String);if([portal respondsToSelector:s])((void(*)(id,SEL,BOOL))objc_msgSend)(portal,s,YES);}SEL hit=sel_registerName("setAllowsHitTesting:");if([portal respondsToSelector:hit])((void(*)(id,SEL,BOOL))objc_msgSend)(portal,hit,NO);SEL hide=sel_registerName("setHidesSourceView:");if([portal respondsToSelector:hide])((void(*)(id,SEL,BOOL))objc_msgSend)(portal,hide,NO);
+    portal.frame=vc.view.bounds;portal.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;return portal;
+}
+
 static void ClearControllerLayers(UIView *v,UITabBar *bar){
     if(v==bar)return;
     v.backgroundColor=UIColor.clearColor;v.opaque=NO;
     for(UIView*s in v.subviews)ClearControllerLayers(s,bar);
-}
-
-static BOOL WithinSelectionContainer(UIView*v){for(UIView*p=v;p;p=p.superview)if([NSStringFromClass(p.class)containsString:@"FloatingTabBarSelectionContainerView"])return YES;return NO;}
-static void StripFullWidthSystemBackdrop(UIView*v){
-    NSString*n=NSStringFromClass(v.class);
-    if([n containsString:@"UITabBarGlassBackground"]){v.hidden=YES;v.alpha=0;return;}
-    if([n containsString:@"UIFloatingTabBar"]){
-        for(NSString*k in @[@"backgroundView",@"backgroundCaptureView",@"backdropCaptureView"]){@try{id x=[v valueForKey:k];if([x isKindOfClass:UIView.class]&&!WithinSelectionContainer(x)){UIView*b=x;b.hidden=YES;b.alpha=0;b.backgroundColor=UIColor.clearColor;}}@catch(__unused id e){}}
-    }
-    if([v isKindOfClass:UIVisualEffectView.class]&&!WithinSelectionContainer(v)){
-        BOOL floating=NO;for(UIView*p=v.superview;p;p=p.superview){NSString*pn=NSStringFromClass(p.class);if([pn containsString:@"UIFloatingTabBar"]||[pn containsString:@"UITabBarPlatterView"]||[pn containsString:@"UITabBarGlassBackground"]){floating=YES;break;}}
-        if(floating){v.hidden=YES;v.alpha=0;return;}
-    }
-    for(UIView*s in v.subviews)StripFullWidthSystemBackdrop(s);
 }
 
 static void InstallNativeTabBar(UIView *pivot) {
@@ -273,30 +265,26 @@ static void InstallNativeTabBar(UIView *pivot) {
         UITabBar *bar=controller.tabBar;wrapper.tabBar=bar;ClearControllerLayers(controller.view,bar);
         objc_setAssociatedObject(pivot,kYTNativeWrapperKey,wrapper,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(pivot,kYTNativeControllerKey,controller,OBJC_ASSOCIATION_RETAIN_NONATOMIC); objc_setAssociatedObject(pivot,kYTNativeTabKey,bar,OBJC_ASSOCIATION_ASSIGN); objc_setAssociatedObject(pivot,kYTNativeDelegateKey,delegate,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    NSMutableArray *controllers=[NSMutableArray array]; NSInteger selected=NSNotFound;
+    BOOL rebuild=controller.viewControllers.count!=pivotItems.count;NSMutableArray *controllers=rebuild?[NSMutableArray array]:[controller.viewControllers mutableCopy];NSInteger selected=NSNotFound;
     for(NSUInteger i=0;i<pivotItems.count;i++){
         UIView *original=pivotItems[i]; UIButton*b=ButtonInPivotItem(original); UIImage *image=b.imageView.image; NSString *title=b.currentTitle?:b.titleLabel.text?:@"";
-        BOOL avatar=[title isEqualToString:@"我"]||[title localizedCaseInsensitiveContainsString:@"you"];
-        UIImageRenderingMode mode=avatar?UIImageRenderingModeAlwaysOriginal:UIImageRenderingModeAlwaysTemplate;
-        UIViewController *vc=[UIViewController new]; vc.view.backgroundColor=UIColor.clearColor;
-        vc.tabBarItem=[[UITabBarItem alloc]initWithTitle:title image:[image imageWithRenderingMode:mode] tag:(NSInteger)i]; vc.tabBarItem.selectedImage=[image imageWithRenderingMode:mode]; [controllers addObject:vc];
-        SEL selectedSEL=sel_registerName("selected"); if([original respondsToSelector:selectedSEL]&&((BOOL(*)(id,SEL))objc_msgSend)(original,selectedSEL))selected=i;
-        original.alpha=.01; original.userInteractionEnabled=NO;
+        BOOL avatar=[title isEqualToString:@"我"]||[title localizedCaseInsensitiveContainsString:@"you"];UIImageRenderingMode mode=avatar?UIImageRenderingModeAlwaysOriginal:UIImageRenderingModeAlwaysTemplate;
+        UIViewController *vc=rebuild?[UIViewController new]:controllers[i];vc.view.backgroundColor=UIColor.clearColor;vc.view.opaque=NO;
+        if(rebuild)[controllers addObject:vc];vc.tabBarItem=[[UITabBarItem alloc]initWithTitle:title image:[image imageWithRenderingMode:mode] tag:(NSInteger)i];vc.tabBarItem.selectedImage=[image imageWithRenderingMode:mode];
+        SEL selectedSEL=sel_registerName("selected");if([original respondsToSelector:selectedSEL]&&((BOOL(*)(id,SEL))objc_msgSend)(original,selectedSEL))selected=i;original.alpha=.01;original.userInteractionEnabled=NO;
     }
-    delegate.pivotItems=pivotItems; delegate.syncing=YES; controller.viewControllers=controllers; if(selected!=NSNotFound)controller.selectedIndex=selected; delegate.syncing=NO;
+    delegate.pivotItems=pivotItems;delegate.syncing=YES;if(rebuild)controller.viewControllers=controllers;if(selected!=NSNotFound&&controller.selectedIndex!=selected)controller.selectedIndex=selected;delegate.syncing=NO;
     UIView *app=pivot.superview;YTGPassThroughView*wrapper=objc_getAssociatedObject(pivot,kYTNativeWrapperKey);wrapper.frame=app.bounds;wrapper.hidden=pivot.hidden||CGRectGetMinY(pivot.frame)>=app.bounds.size.height-1;
     controller.view.frame=wrapper.bounds;UITabBar*bar=controller.tabBar;wrapper.tabBar=bar;ClearControllerLayers(controller.view,bar);
-    for(UIViewController*vc in controller.viewControllers){vc.view.backgroundColor=UIColor.clearColor;vc.view.opaque=NO;}
-    [controller.view setNeedsLayout];[controller.view layoutIfNeeded];StripFullWidthSystemBackdrop(controller.view);[app bringSubviewToFront:wrapper];
-    dispatch_async(dispatch_get_main_queue(),^{StripFullWidthSystemBackdrop(controller.view);});
+    UIView*source=YouTubeContentSource(app,pivot,wrapper);for(UIViewController*vc in controller.viewControllers)EnsurePortal(vc,source);
+    [controller.view setNeedsLayout];[controller.view layoutIfNeeded];[app bringSubviewToFront:wrapper];
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
     host.transform=CGAffineTransformIdentity;
     ExtendRealFeedUnderPivot(host);
     ClearSurface(host); ClearShortAncestors(host,260.0); ClearBottomBarHierarchy(host);
-    CGFloat safe=host.safeAreaInsets.bottom;if(safe<1.0&&host.window)safe=host.window.safeAreaInsets.bottom;
-    UIVisualEffectView*glass=ClearGlassForHost(host);if(glass){CGFloat h=MIN(72.0,MAX(64.0,host.bounds.size.height-safe+10.0));glass.frame=CGRectMake(8.0,MAX(0.0,(host.bounds.size.height-safe-h)/2.0),MAX(0.0,host.bounds.size.width-16.0),h);glass.layer.cornerRadius=h/2;glass.layer.masksToBounds=YES;[host sendSubviewToBack:glass];}
+    UIView *oldGlass=objc_getAssociatedObject(host,kYTGlassKey); if(oldGlass){[oldGlass removeFromSuperview];objc_setAssociatedObject(host,kYTGlassKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
     UIView *app=host.superview; if(app)[app bringSubviewToFront:host];
     host.clipsToBounds=NO; InstallNativeTabBar(host);
 }
