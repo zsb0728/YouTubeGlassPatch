@@ -10,11 +10,11 @@ static YTGHook gHooks[12]; static int gHookCount = 0;
 static id NewNativeGlass(BOOL interactive) API_AVAILABLE(ios(26.0)) {
     Class cls = NSClassFromString(@"UIGlassEffect"); if (!cls) return nil;
     id effect = nil; SEL factory = sel_registerName("effectWithStyle:");
-    if ([cls respondsToSelector:factory]) effect = ((id(*)(id,SEL,NSInteger))objc_msgSend)(cls,factory,1);
+    if ([cls respondsToSelector:factory]) effect = ((id(*)(id,SEL,NSInteger))objc_msgSend)(cls,factory,0);
     if (!effect) {
         id obj = ((id(*)(id,SEL))objc_msgSend)(cls,@selector(alloc));
         SEL init = sel_registerName("initWithStyle:");
-        if ([obj respondsToSelector:init]) effect = ((id(*)(id,SEL,NSInteger))objc_msgSend)(obj,init,1);
+        if ([obj respondsToSelector:init]) effect = ((id(*)(id,SEL,NSInteger))objc_msgSend)(obj,init,0);
     }
     SEL setInteractive = sel_registerName("setInteractive:");
     if (effect && [effect respondsToSelector:setInteractive]) ((void(*)(id,SEL,BOOL))objc_msgSend)(effect,setInteractive,interactive);
@@ -167,11 +167,18 @@ static void StylePivotItem(UIView *item) {
     UIView *pivot=item.superview;
     while(pivot && ![NSStringFromClass(pivot.class)isEqualToString:@"YTPivotBarView"])pivot=pivot.superview;
     if(!pivot||CGRectIsEmpty(gPivotGlassFrame))return;
-    CGPoint c=[item.superview convertPoint:item.center toView:pivot];
-    CGFloat untransformedY=c.y-item.transform.ty;
-    CGFloat delta=CGRectGetMidY(gPivotGlassFrame)-untransformedY+3.0;
-    delta=MAX(0.0,MIN(16.0,delta));
-    item.transform=CGAffineTransformMakeTranslation(0,delta);
+    item.transform=CGAffineTransformIdentity;
+    CGFloat target=CGRectGetMidY(gPivotGlassFrame);
+    for(UIView *s in item.subviews) {
+        NSString *n=NSStringFromClass(s.class);
+        BOOL visibleContent=[n isEqualToString:@"YTQTMButton"]||[n containsString:@"AccessibilityControl"]||[n containsString:@"IndicatorView"]||[n isEqualToString:@"YTTransferButton"];
+        if(!visibleContent)continue;
+        CGPoint c=[s.superview convertPoint:s.center toView:pivot];
+        CGFloat baseY=c.y-s.transform.ty;
+        CGFloat visualCorrection=[n containsString:@"IndicatorView"]?0.0:3.0;
+        CGFloat delta=target-baseY+visualCorrection;
+        s.transform=CGAffineTransformMakeTranslation(0,MAX(0.0,MIN(40.0,delta)));
+    }
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
@@ -181,8 +188,7 @@ static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
     UIView *app=host.superview; if(app)[app bringSubviewToFront:host];
     CGFloat safe=host.safeAreaInsets.bottom; if(safe<1.0&&host.window)safe=host.window.safeAreaInsets.bottom;
     UIVisualEffectView *ev=GlassForHost(host,YES); if(!ev)return;
-    ev.alpha=1.0; id effect=ev.effect; SEL setTint=sel_registerName("setTintColor:");
-    if([effect respondsToSelector:setTint])((void(*)(id,SEL,id))objc_msgSend)(effect,setTint,UIColor.clearColor);
+    ev.alpha=1.0;
     CGFloat h=MIN(72.0,MAX(64.0,host.bounds.size.height-safe+10.0));
     ev.frame=CGRectMake(8.0,MAX(0.0,(host.bounds.size.height-safe-h)/2.0),MAX(0.0,host.bounds.size.width-16.0),h);
     gPivotGlassFrame=ev.frame;
@@ -190,19 +196,13 @@ static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
     [host sendSubviewToBack:ev]; host.clipsToBounds=NO; CenterPivotContent(host);
 }
 
-static void TintGlass(UIVisualEffectView *ev, BOOL selected) API_AVAILABLE(ios(26.0)) {
-    id effect = ev.effect; SEL setTint = sel_registerName("setTintColor:");
-    if ([effect respondsToSelector:setTint]) {
-        UIColor *c = selected ? [UIColor colorWithWhite:1 alpha:0.20] : [UIColor colorWithWhite:1 alpha:0.04];
-        ((void(*)(id,SEL,id))objc_msgSend)(effect,setTint,c);
-    }
-}
+static void TintGlass(UIVisualEffectView *ev, BOOL selected) { (void)ev; (void)selected; }
 
 static void StyleChip(UIView *host) API_AVAILABLE(ios(26.0)) {
     if (host.bounds.size.width<28 || host.bounds.size.width>260 || host.bounds.size.height<24 || host.bounds.size.height>64) return;
     ClearSurface(host); ClearStructuralBackdrops(host,2);
     UIVisualEffectView *ev = GlassForHost(host,YES); if (!ev) return;
-    ev.alpha=0.68;
+    ev.alpha=1.0;
     ev.frame=host.bounds; ev.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
     ev.layer.cornerRadius=MIN(host.bounds.size.height/2.0,16.0);
     TintGlass(ev,[host isKindOfClass:UIControl.class] ? ((UIControl*)host).selected : NO);
