@@ -244,7 +244,7 @@ static void StripFullWidthSystemBackdrop(UIView*v){
         for(NSString*k in @[@"backgroundView",@"backgroundCaptureView",@"backdropCaptureView"]){@try{id x=[v valueForKey:k];if([x isKindOfClass:UIView.class]&&!WithinSelectionContainer(x)){UIView*b=x;b.hidden=YES;b.alpha=0;b.backgroundColor=UIColor.clearColor;}}@catch(__unused id e){}}
     }
     if([v isKindOfClass:UIVisualEffectView.class]&&!WithinSelectionContainer(v)){
-        BOOL floating=NO;for(UIView*p=v.superview;p;p=p.superview)if([NSStringFromClass(p.class)containsString:@"UIFloatingTabBar"]){floating=YES;break;}
+        BOOL floating=NO;for(UIView*p=v.superview;p;p=p.superview){NSString*pn=NSStringFromClass(p.class);if([pn containsString:@"UIFloatingTabBar"]||[pn containsString:@"UITabBarPlatterView"]||[pn containsString:@"UITabBarGlassBackground"]){floating=YES;break;}}
         if(floating){v.hidden=YES;v.alpha=0;return;}
     }
     for(UIView*s in v.subviews)StripFullWidthSystemBackdrop(s);
@@ -276,9 +276,10 @@ static void InstallNativeTabBar(UIView *pivot) {
     }
     delegate.pivotItems=pivotItems; delegate.syncing=YES; controller.viewControllers=controllers; if(selected!=NSNotFound)controller.selectedIndex=selected; delegate.syncing=NO;
     UIView *app=pivot.superview;YTGPassThroughView*wrapper=objc_getAssociatedObject(pivot,kYTNativeWrapperKey);wrapper.frame=app.bounds;wrapper.hidden=pivot.hidden||CGRectGetMinY(pivot.frame)>=app.bounds.size.height-1;
-    controller.view.frame=wrapper.bounds;UITabBar*bar=controller.tabBar;wrapper.tabBar=bar;ClearControllerLayers(controller.view,bar);StripFullWidthSystemBackdrop(bar);
+    controller.view.frame=wrapper.bounds;UITabBar*bar=controller.tabBar;wrapper.tabBar=bar;ClearControllerLayers(controller.view,bar);
     for(UIViewController*vc in controller.viewControllers){vc.view.backgroundColor=UIColor.clearColor;vc.view.opaque=NO;}
-    [controller.view setNeedsLayout];[controller.view layoutIfNeeded];[app bringSubviewToFront:wrapper];
+    [controller.view setNeedsLayout];[controller.view layoutIfNeeded];StripFullWidthSystemBackdrop(controller.view);[app bringSubviewToFront:wrapper];
+    dispatch_async(dispatch_get_main_queue(),^{StripFullWidthSystemBackdrop(controller.view);});
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
