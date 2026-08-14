@@ -153,7 +153,15 @@ static BOOL ContainsPivotItem(UIView *v) {
     return NO;
 }
 
-static void CenterPivotContent(UIView *host) { (void)host; }
+static void StylePivotItem(UIView *item);
+static void CenterPivotContent(UIView *host) {
+    NSMutableArray<UIView*> *stack=[NSMutableArray arrayWithArray:host.subviews];
+    while(stack.count){
+        UIView *v=stack.lastObject; [stack removeLastObject];
+        if([NSStringFromClass(v.class)isEqualToString:@"YTPivotBarItemView"])StylePivotItem(v);
+        else [stack addObjectsFromArray:v.subviews];
+    }
+}
 
 static BOOL IsInsidePivotBar(UIView *v) {
     for(UIView *p=v.superview;p;p=p.superview)if([NSStringFromClass(p.class)isEqualToString:@"YTPivotBarView"])return YES;
