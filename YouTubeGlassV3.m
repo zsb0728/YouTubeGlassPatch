@@ -3,7 +3,7 @@
 #import <objc/message.h>
 
 static const void *kYTGlassKey = &kYTGlassKey;
-typedef NS_ENUM(NSInteger, YTGKind) { YTGKindPivot, YTGKindChip, YTGKindChipBar, YTGKindHeader };
+typedef NS_ENUM(NSInteger, YTGKind) { YTGKindPivot, YTGKindChip, YTGKindChipBar, YTGKindHeader, YTGKindSubheader };
 typedef struct { Class cls; IMP original; YTGKind kind; } YTGHook;
 static YTGHook gHooks[12]; static int gHookCount = 0;
 
@@ -147,6 +147,19 @@ static void ExtendRealFeedUnderPivot(UIView *pivot) {
     UIEdgeInsets si=best.scrollIndicatorInsets; si.bottom=MAX(si.bottom,pivot.bounds.size.height); best.scrollIndicatorInsets=si;
 }
 
+static BOOL ContainsPivotItem(UIView *v) {
+    if([NSStringFromClass(v.class) isEqualToString:@"YTPivotBarItemView"])return YES;
+    for(UIView *s in v.subviews)if(ContainsPivotItem(s))return YES;
+    return NO;
+}
+
+static void CenterPivotContent(UIView *host) {
+    for(UIView *s in host.subviews) {
+        if([s isKindOfClass:UIVisualEffectView.class])continue;
+        if(ContainsPivotItem(s))s.transform=CGAffineTransformMakeTranslation(0,5.0);
+    }
+}
+
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
     host.transform=CGAffineTransformIdentity;
     ExtendRealFeedUnderPivot(host);
@@ -159,7 +172,7 @@ static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
     CGFloat h=MIN(72.0,MAX(64.0,host.bounds.size.height-safe+10.0));
     ev.frame=CGRectMake(8.0,MAX(0.0,(host.bounds.size.height-safe-h)/2.0),MAX(0.0,host.bounds.size.width-16.0),h);
     ev.layer.cornerRadius=h/2.0; ev.layer.masksToBounds=YES; ev.layer.borderWidth=.75; ev.layer.borderColor=[UIColor colorWithWhite:1 alpha:.20].CGColor;
-    [host sendSubviewToBack:ev]; host.clipsToBounds=NO;
+    [host sendSubviewToBack:ev]; host.clipsToBounds=NO; CenterPivotContent(host);
 }
 
 static void TintGlass(UIVisualEffectView *ev, BOOL selected) API_AVAILABLE(ios(26.0)) {
@@ -196,6 +209,18 @@ static void StyleChipBar(UIView *host) API_AVAILABLE(ios(26.0)) {
     }
 }
 
+static void StyleSubheader(UIView *host) {
+    ClearSurface(host); host.opaque=NO;
+    for(UIView *s in host.subviews) {
+        ClearSurface(s); s.opaque=NO;
+        if([s isKindOfClass:UICollectionView.class]) {
+            UICollectionView *cv=(UICollectionView*)s; cv.backgroundView=nil; cv.backgroundColor=UIColor.clearColor; cv.opaque=NO;
+        }
+    }
+    UIView *p=host.superview;
+    if(p && p.bounds.size.height<=160.0){ClearSurface(p);p.opaque=NO;}
+}
+
 static void GlassHeaderControls(UIView *root) API_AVAILABLE(ios(26.0)) {
     for (UIView *s in root.subviews) {
         if ([s isKindOfClass:UIControl.class] && s.bounds.size.width>=28 && s.bounds.size.width<=64 && s.bounds.size.height>=28 && s.bounds.size.height<=64) {
@@ -224,7 +249,7 @@ static YTGHook *HookForObject(id obj) {
 
 static void ApplyKind(UIView *v,YTGKind kind) {
     if (@available(iOS 26.0,*)) {
-        switch(kind) { case YTGKindPivot: StylePivot(v); break; case YTGKindChip: StyleChip(v); break; case YTGKindChipBar: StyleChipBar(v); break; case YTGKindHeader: StyleHeader(v); break; }
+        switch(kind) { case YTGKindPivot: StylePivot(v); break; case YTGKindChip: StyleChip(v); break; case YTGKindChipBar: StyleChipBar(v); break; case YTGKindHeader: StyleHeader(v); break; case YTGKindSubheader: StyleSubheader(v); break; }
     }
 }
 
@@ -263,6 +288,7 @@ __attribute__((constructor)) static void StartYouTubeGlassV3(void) {
         InstallHook("YTGhostChipCell",YTGKindChip);
         InstallHook("YTFilterChipBarView",YTGKindChipBar);
         InstallHook("YTHeaderView",YTGKindHeader);
+        InstallHook("YTSubheaderContainerView",YTGKindSubheader);
         LifecyclePulse();
         [[NSNotificationCenter defaultCenter]addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification*n){ScanWindows();}];
         for(int i=1;i<=24;i++)dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(i*.25*NSEC_PER_SEC)),dispatch_get_main_queue(),^{ScanWindows();});
