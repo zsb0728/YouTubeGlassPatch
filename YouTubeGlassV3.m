@@ -8,12 +8,15 @@ static const void *kYTNativeDelegateKey = &kYTNativeDelegateKey;
 
 @interface YTGNativeTabDelegate : NSObject <UITabBarDelegate>
 @property(nonatomic,weak) UIView *pivot;
-@property(nonatomic,strong) NSArray<UIButton*> *buttons;
+@property(nonatomic,strong) NSArray<UIView*> *pivotItems;
 @end
 @implementation YTGNativeTabDelegate
 - (void)tabBar:(UITabBar*)tabBar didSelectItem:(UITabBarItem*)item {
-    NSInteger i=item.tag;
-    if(i>=0 && i<(NSInteger)self.buttons.count){UIButton*b=self.buttons[i];[b sendActionsForControlEvents:UIControlEventTouchUpInside];}
+    NSInteger i=item.tag; if(i<0||i>=(NSInteger)self.pivotItems.count)return;
+    UIView *original=self.pivotItems[i];
+    SEL tap=sel_registerName("didTapButton"); SEL doTap=sel_registerName("doTap");
+    if([original respondsToSelector:tap])((void(*)(id,SEL))objc_msgSend)(original,tap);
+    else if([original respondsToSelector:doTap])((void(*)(id,SEL))objc_msgSend)(original,doTap);
 }
 @end
 typedef NS_ENUM(NSInteger, YTGKind) { YTGKindPivot, YTGKindPivotItem, YTGKindChip, YTGKindChipBar, YTGKindHeader, YTGKindSubheader, YTGKindAsyncCollection };
@@ -194,31 +197,42 @@ static void StylePivotItem(UIView *item) {
     }
 }
 
-static void CollectPivotButtons(UIView *v,NSMutableArray<UIButton*> *out) {
-    if([NSStringFromClass(v.class)isEqualToString:@"YTQTMButton"] && !v.hidden && v.bounds.size.width>20)[out addObject:(UIButton*)v];
-    for(UIView *s in v.subviews)CollectPivotButtons(s,out);
+static UIButton *ButtonInPivotItem(UIView *item) {
+    for(UIView *s in item.subviews)if([NSStringFromClass(s.class)isEqualToString:@"YTQTMButton"]&&s.bounds.size.width>20)return (UIButton*)s;
+    return nil;
+}
+
+static void CollectPivotItems(UIView *v,NSMutableArray<UIView*> *out) {
+    if([NSStringFromClass(v.class)isEqualToString:@"YTPivotBarItemView"]){
+        CGRect r=v.frame; UIButton*b=ButtonInPivotItem(v);
+        if(!v.hidden&&r.size.width>20&&r.size.height>=0&&b&&!b.hidden)[out addObject:v];
+        return;
+    }
+    if([v isKindOfClass:UITabBar.class])return;
+    for(UIView *s in v.subviews)CollectPivotItems(s,out);
 }
 
 static void InstallNativeTabBar(UIView *pivot) {
-    NSMutableArray<UIButton*> *buttons=[NSMutableArray array]; CollectPivotButtons(pivot,buttons);
-    [buttons sortUsingComparator:^NSComparisonResult(UIButton*a,UIButton*b){CGRect ar=[a convertRect:a.bounds toView:pivot],br=[b convertRect:b.bounds toView:pivot];return CGRectGetMinX(ar)<CGRectGetMinX(br)?NSOrderedAscending:NSOrderedDescending;}];
-    if(buttons.count<2)return;
+    NSMutableArray<UIView*> *pivotItems=[NSMutableArray array]; CollectPivotItems(pivot,pivotItems);
+    [pivotItems sortUsingComparator:^NSComparisonResult(UIView*a,UIView*b){CGRect ar=[a convertRect:a.bounds toView:pivot],br=[b convertRect:b.bounds toView:pivot];return CGRectGetMinX(ar)<CGRectGetMinX(br)?NSOrderedAscending:NSOrderedDescending;}];
+    if(pivotItems.count<2)return;
     UITabBar *bar=objc_getAssociatedObject(pivot,kYTNativeTabKey);
     YTGNativeTabDelegate *delegate=objc_getAssociatedObject(pivot,kYTNativeDelegateKey);
     if(!bar){
-        bar=[[UITabBar alloc]initWithFrame:pivot.bounds]; bar.translucent=YES; bar.backgroundColor=UIColor.clearColor; bar.opaque=NO;
-        UITabBarAppearance *ap=[UITabBarAppearance new]; [ap configureWithTransparentBackground]; ap.backgroundColor=UIColor.clearColor;
+        bar=[[UITabBar alloc]initWithFrame:pivot.bounds]; bar.translucent=YES; bar.backgroundColor=UIColor.clearColor; bar.opaque=NO; bar.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;
+        UITabBarAppearance *ap=[UITabBarAppearance new]; [ap configureWithTransparentBackground]; ap.backgroundColor=UIColor.clearColor; ap.shadowColor=UIColor.clearColor; ap.backgroundEffect=nil;
         bar.standardAppearance=ap; if([bar respondsToSelector:@selector(setScrollEdgeAppearance:)])bar.scrollEdgeAppearance=ap;
         delegate=[YTGNativeTabDelegate new]; delegate.pivot=pivot; bar.delegate=delegate;
         [pivot addSubview:bar]; objc_setAssociatedObject(pivot,kYTNativeTabKey,bar,OBJC_ASSOCIATION_RETAIN_NONATOMIC); objc_setAssociatedObject(pivot,kYTNativeDelegateKey,delegate,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     NSMutableArray *items=[NSMutableArray array]; NSInteger selected=NSNotFound;
-    for(NSUInteger i=0;i<buttons.count;i++){
-        UIButton*b=buttons[i]; UIImage *image=b.imageView.image; NSString *title=b.currentTitle?:b.titleLabel.text?:@"";
+    for(NSUInteger i=0;i<pivotItems.count;i++){
+        UIView *original=pivotItems[i]; UIButton*b=ButtonInPivotItem(original); UIImage *image=b.imageView.image; NSString *title=b.currentTitle?:b.titleLabel.text?:@"";
         UITabBarItem *item=[[UITabBarItem alloc]initWithTitle:title image:[image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate] tag:(NSInteger)i]; [items addObject:item];
-        if(b.selected)selected=i; b.alpha=.01; b.userInteractionEnabled=NO;
+        SEL selectedSEL=sel_registerName("selected"); if([original respondsToSelector:selectedSEL]&&((BOOL(*)(id,SEL))objc_msgSend)(original,selectedSEL))selected=i;
+        original.alpha=.01; original.userInteractionEnabled=NO;
     }
-    delegate.buttons=buttons; bar.items=items; if(selected!=NSNotFound)bar.selectedItem=items[selected];
+    delegate.pivotItems=pivotItems; bar.items=items; if(selected!=NSNotFound)bar.selectedItem=items[selected];
     bar.frame=pivot.bounds; bar.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight; [pivot bringSubviewToFront:bar];
 }
 
