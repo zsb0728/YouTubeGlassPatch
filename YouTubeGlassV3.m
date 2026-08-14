@@ -192,7 +192,7 @@ static BOOL IsInsidePivotBar(UIView *v) {
     return NO;
 }
 
-(UIView *item) {
+static void StylePivotItem(UIView *item) {
     if(!IsInsidePivotBar(item))return;
     UIView *pivot=item.superview;
     while(pivot && ![NSStringFromClass(pivot.class)isEqualToString:@"YTPivotBarView"])pivot=pivot.superview;
