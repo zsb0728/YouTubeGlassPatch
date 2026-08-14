@@ -219,7 +219,9 @@ static void InstallNativeTabBar(UIView *pivot) {
     UITabBar *bar=objc_getAssociatedObject(pivot,kYTNativeTabKey);
     YTGNativeTabDelegate *delegate=objc_getAssociatedObject(pivot,kYTNativeDelegateKey);
     if(!bar){
-        bar=[[UITabBar alloc]initWithFrame:pivot.bounds];
+        bar=[[UITabBar alloc]initWithFrame:pivot.bounds]; bar.translucent=YES; bar.backgroundColor=UIColor.clearColor; bar.opaque=NO;
+        UITabBarAppearance *ap=[UITabBarAppearance new]; [ap configureWithTransparentBackground]; ap.backgroundColor=UIColor.clearColor; ap.shadowColor=UIColor.clearColor; ap.backgroundEffect=NewNativeGlass(NO);
+        bar.standardAppearance=ap; if([bar respondsToSelector:@selector(setScrollEdgeAppearance:)])bar.scrollEdgeAppearance=ap;
         delegate=[YTGNativeTabDelegate new]; delegate.pivot=pivot; bar.delegate=delegate;
         [pivot addSubview:bar]; objc_setAssociatedObject(pivot,kYTNativeTabKey,bar,OBJC_ASSOCIATION_RETAIN_NONATOMIC); objc_setAssociatedObject(pivot,kYTNativeDelegateKey,delegate,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
