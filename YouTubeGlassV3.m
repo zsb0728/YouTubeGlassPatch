@@ -3,7 +3,7 @@
 #import <objc/message.h>
 
 static const void *kYTGlassKey = &kYTGlassKey;
-typedef NS_ENUM(NSInteger, YTGKind) { YTGKindPivot, YTGKindChip, YTGKindChipBar, YTGKindHeader, YTGKindSubheader };
+typedef NS_ENUM(NSInteger, YTGKind) { YTGKindPivot, YTGKindPivotItem, YTGKindChip, YTGKindChipBar, YTGKindHeader, YTGKindSubheader, YTGKindAsyncCollection };
 typedef struct { Class cls; IMP original; YTGKind kind; } YTGHook;
 static YTGHook gHooks[12]; static int gHookCount = 0;
 
@@ -153,11 +153,15 @@ static BOOL ContainsPivotItem(UIView *v) {
     return NO;
 }
 
-static void CenterPivotContent(UIView *host) {
-    for(UIView *s in host.subviews) {
-        if([s isKindOfClass:UIVisualEffectView.class])continue;
-        if(ContainsPivotItem(s))s.transform=CGAffineTransformMakeTranslation(0,5.0);
-    }
+static void CenterPivotContent(UIView *host) { (void)host; }
+
+static BOOL IsInsidePivotBar(UIView *v) {
+    for(UIView *p=v.superview;p;p=p.superview)if([NSStringFromClass(p.class)isEqualToString:@"YTPivotBarView"])return YES;
+    return NO;
+}
+
+static void StylePivotItem(UIView *item) {
+    if(IsInsidePivotBar(item))item.transform=CGAffineTransformMakeTranslation(0,8.0);
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
@@ -209,6 +213,31 @@ static void StyleChipBar(UIView *host) API_AVAILABLE(ios(26.0)) {
     }
 }
 
+static void ClearSubheaderTree(UIView *v) {
+    if([v isKindOfClass:UILabel.class]||[v isKindOfClass:UIImageView.class]||[v isKindOfClass:UIVisualEffectView.class])return;
+    NSString *n=NSStringFromClass(v.class);
+    BOOL chip=[n containsString:@"ChipView"]||[n containsString:@"ChipCell"];
+    if(!chip)ClearSurface(v); v.opaque=NO;
+    if([v isKindOfClass:UICollectionViewCell.class])ClearSurface(((UICollectionViewCell*)v).contentView);
+    for(UIView *s in v.subviews)ClearSubheaderTree(s);
+}
+
+static BOOL IsSubheaderCollection(UIView *v) {
+    if(v.bounds.size.height>70.0)return NO;
+    for(UIView *p=v.superview;p;p=p.superview){
+        NSString *n=NSStringFromClass(p.class);
+        if([n isEqualToString:@"YTSubheaderContainerView"])return YES;
+        if(p.bounds.size.height>180.0)return NO;
+    }
+    return NO;
+}
+
+static void StyleAsyncCollection(UIView *v) {
+    if(!IsSubheaderCollection(v))return;
+    UICollectionView *cv=(UICollectionView*)v; cv.backgroundView=nil; cv.backgroundColor=UIColor.clearColor; cv.opaque=NO;
+    for(UIView *s in cv.subviews)ClearSubheaderTree(s);
+}
+
 static void StyleSubheader(UIView *host) {
     ClearSurface(host); host.opaque=NO;
     for(UIView *s in host.subviews) {
@@ -249,7 +278,7 @@ static YTGHook *HookForObject(id obj) {
 
 static void ApplyKind(UIView *v,YTGKind kind) {
     if (@available(iOS 26.0,*)) {
-        switch(kind) { case YTGKindPivot: StylePivot(v); break; case YTGKindChip: StyleChip(v); break; case YTGKindChipBar: StyleChipBar(v); break; case YTGKindHeader: StyleHeader(v); break; case YTGKindSubheader: StyleSubheader(v); break; }
+        switch(kind) { case YTGKindPivot: StylePivot(v); break; case YTGKindPivotItem: StylePivotItem(v); break; case YTGKindChip: StyleChip(v); break; case YTGKindChipBar: StyleChipBar(v); break; case YTGKindHeader: StyleHeader(v); break; case YTGKindSubheader: StyleSubheader(v); break; case YTGKindAsyncCollection: StyleAsyncCollection(v); break; }
     }
 }
 
@@ -283,12 +312,14 @@ static void LifecyclePulse(void) {
 __attribute__((constructor)) static void StartYouTubeGlassV3(void) {
     dispatch_async(dispatch_get_main_queue(),^{
         InstallHook("YTPivotBarView",YTGKindPivot);
+        InstallHook("YTPivotBarItemView",YTGKindPivotItem);
         InstallHook("YTChipCloudChipView",YTGKindChip);
         InstallHook("YTChipCloudChipCell",YTGKindChip);
         InstallHook("YTGhostChipCell",YTGKindChip);
         InstallHook("YTFilterChipBarView",YTGKindChipBar);
         InstallHook("YTHeaderView",YTGKindHeader);
         InstallHook("YTSubheaderContainerView",YTGKindSubheader);
+        InstallHook("YTAsyncCollectionView",YTGKindAsyncCollection);
         LifecyclePulse();
         [[NSNotificationCenter defaultCenter]addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification*n){ScanWindows();}];
         for(int i=1;i<=24;i++)dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(i*.25*NSEC_PER_SEC)),dispatch_get_main_queue(),^{ScanWindows();});
