@@ -276,7 +276,7 @@ static void InstallNativeTabBar(UIView *pivot) {
     delegate.pivotItems=pivotItems;delegate.syncing=YES;if(rebuild)controller.viewControllers=controllers;if(selected!=NSNotFound&&controller.selectedIndex!=selected)controller.selectedIndex=selected;delegate.syncing=NO;
     UIView *app=pivot.superview;YTGPassThroughView*wrapper=objc_getAssociatedObject(pivot,kYTNativeWrapperKey);wrapper.frame=app.bounds;wrapper.hidden=pivot.hidden||CGRectGetMinY(pivot.frame)>=app.bounds.size.height-1;
     controller.view.frame=wrapper.bounds;UITabBar*bar=controller.tabBar;wrapper.tabBar=bar;ClearControllerLayers(controller.view,bar);
-    UIView*source=YouTubeContentSource(app,pivot,wrapper);for(UIViewController*vc in controller.viewControllers)EnsurePortal(vc,source);
+    UIView*source=YouTubeContentSource(app,pivot,wrapper);EnsurePortal(controller,source);for(UIViewController*vc in controller.viewControllers){vc.view.backgroundColor=UIColor.clearColor;vc.view.opaque=NO;}
     [controller.view setNeedsLayout];[controller.view layoutIfNeeded];[app bringSubviewToFront:wrapper];
 }
 
