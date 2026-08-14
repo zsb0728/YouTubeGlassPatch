@@ -31,6 +31,7 @@ static IMP gYTWatchWillAppearIMP;
 static IMP gYTWatchDidDisappearIMP;
 static void ScheduleSafeOverlayRebuild(void);
 static void InstallNativeTabBar(UIView *pivot);
+static void RefreshExistingPortalToCurrentFeed(void);
 
 @interface YTGPassThroughView : UIView
 @property(nonatomic,weak) UITabBar *tabBar;
@@ -281,7 +282,7 @@ static BOOL WatchIsActive(void){
 
 static void UpdateSystemTabVisibility(void){
     UIView*wrapper=gYTWrapper;if(!wrapper)return;
-    BOOL hidden=WatchIsActive()||gYTReturningFromWatch;if(wrapper.hidden!=hidden)wrapper.hidden=hidden;
+    BOOL hidden=WatchIsActive();if(wrapper.hidden!=hidden)wrapper.hidden=hidden;wrapper.alpha=1.0;wrapper.userInteractionEnabled=!hidden;
 }
 
 static void WatchWillAppear(id self,SEL cmd,BOOL animated){
@@ -295,7 +296,7 @@ static void WatchDidDisappear(id self,SEL cmd,BOOL animated){
     objc_setAssociatedObject(self,kYTWatchActiveKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);gYTWatchControllerCount=MAX(0,gYTWatchControllerCount-1);
     gYTReturningFromWatch=YES;gYTReturnGeneration++;gYTReturnCandidate=nil;gYTReturnCandidateHits=0;
     YTGWeakBox*feedBox=objc_getAssociatedObject(gYTPivot,kYTFeedKey);feedBox.value=nil;objc_setAssociatedObject(gYTPivot,kYTConfiguredKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    UpdateSystemTabVisibility();ScheduleSafeOverlayRebuild();
+    RefreshExistingPortalToCurrentFeed();UpdateSystemTabVisibility();ScheduleSafeOverlayRebuild();
 }
 
 static void InstallWatchControllerHooks(void){
@@ -337,26 +338,28 @@ static UIView *EnsurePortal(UIViewController*vc,UIView*source){
     return portal;
 }
 
-static void DestroySystemTabOverlay(UIView*pivot){
-    UITabBarController*controller=objc_getAssociatedObject(pivot,kYTNativeControllerKey);YTGPassThroughView*w=objc_getAssociatedObject(pivot,kYTNativeWrapperKey);
-    [controller willMoveToParentViewController:nil];[controller.view removeFromSuperview];[w removeFromSuperview];[controller removeFromParentViewController];
-    objc_setAssociatedObject(pivot,kYTNativeControllerKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(pivot,kYTNativeWrapperKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(pivot,kYTNativeTabKey,nil,OBJC_ASSOCIATION_ASSIGN);objc_setAssociatedObject(pivot,kYTNativeDelegateKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(pivot,kYTItemSignatureKey,nil,OBJC_ASSOCIATION_COPY_NONATOMIC);
-    gYTWrapper=nil;
+static void RebindExistingPortal(UIView*source){
+    UIView*pivot=gYTPivot;UITabBarController*controller=objc_getAssociatedObject(pivot,kYTNativeControllerKey);UIView*portal=objc_getAssociatedObject(controller,kYTPortalKey);if(!controller||!portal||!source)return;
+    SEL setSource=sel_registerName("setSourceView:");if([portal respondsToSelector:setSource]){[CATransaction begin];[CATransaction setDisableActions:YES];((void(*)(id,SEL,id))objc_msgSend)(portal,setSource,source);[CATransaction commit];}
+    YTGWeakBox*box=objc_getAssociatedObject(controller,kYTPortalSourceKey);if(!box){box=[YTGWeakBox new];objc_setAssociatedObject(controller,kYTPortalSourceKey,box,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}box.value=source;[CATransaction flush];
+}
+
+static void RefreshExistingPortalToCurrentFeed(void){
+    UIView*pivot=gYTPivot;UIView*app=pivot.superview;UIView*w=gYTWrapper;if(!pivot||!app||!w)return;
+    UIView*source=YouTubeContentSource(app,pivot,w);if(source)RebindExistingPortal(source);
 }
 
 static BOOL TrySafeOverlayRebuild(NSInteger generation){
     if(generation!=gYTReturnGeneration||!gYTReturningFromWatch||WatchIsActive())return NO;
-    UIView*pivot=gYTPivot;UIView*app=pivot.superview;YTGPassThroughView*w=objc_getAssociatedObject(pivot,kYTNativeWrapperKey);if(!pivot||!app)return NO;
+    UIView*pivot=gYTPivot;UIView*app=pivot.superview;YTGPassThroughView*w=(YTGPassThroughView*)gYTWrapper;if(!pivot||!app)return NO;
     UIView*source=StrictCurrentFeedSource(app,pivot,w);if(!source){gYTReturnCandidate=nil;gYTReturnCandidateHits=0;return NO;}
-    if(source==gYTReturnCandidate)gYTReturnCandidateHits++;else{gYTReturnCandidate=source;gYTReturnCandidateHits=1;}
-    if(gYTReturnCandidateHits<2)return NO;
-    DestroySystemTabOverlay(pivot);[CATransaction begin];[CATransaction setDisableActions:YES];InstallNativeTabBar(pivot);[CATransaction commit];[CATransaction flush];
-    if(!gYTWrapper)return NO;gYTReturningFromWatch=NO;UpdateSystemTabVisibility();return YES;
+    if(source==gYTReturnCandidate)gYTReturnCandidateHits++;else{gYTReturnCandidate=source;gYTReturnCandidateHits=1;}if(gYTReturnCandidateHits<2)return NO;
+    RebindExistingPortal(source);gYTReturningFromWatch=NO;UpdateSystemTabVisibility();return YES;
 }
 
 static void ScheduleSafeOverlayRebuild(void){
     NSInteger generation=gYTReturnGeneration;
-    for(NSNumber*d in @[@0.20,@0.36,@0.55,@0.80,@1.1,@1.5,@2.0,@3.0])dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(d.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(),^{TrySafeOverlayRebuild(generation);});
+    for(NSNumber*d in @[@0.0,@0.03,@0.08,@0.16,@0.28,@0.45,@0.70,@1.0])dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(d.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(),^{TrySafeOverlayRebuild(generation);});
 }
 
 static void ClearControllerLayers(UIView *v,UITabBar *bar){
@@ -395,7 +398,7 @@ static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
     ExtendRealFeedUnderPivot(host);ClearSurface(host);ClearShortAncestors(host,260.0);
     if(![objc_getAssociatedObject(host,kYTConfiguredKey)boolValue]){ClearBottomBarHierarchy(host);objc_setAssociatedObject(host,kYTConfiguredKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
     UIView*oldGlass=objc_getAssociatedObject(host,kYTGlassKey);if(oldGlass){[oldGlass removeFromSuperview];objc_setAssociatedObject(host,kYTGlassKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
-    if(host.clipsToBounds)host.clipsToBounds=NO;if(gYTReturningFromWatch)return;InstallNativeTabBar(host);
+    if(host.clipsToBounds)host.clipsToBounds=NO;InstallNativeTabBar(host);
 }
 
 static void TintGlass(UIVisualEffectView *ev, BOOL selected) { (void)ev; (void)selected; }
