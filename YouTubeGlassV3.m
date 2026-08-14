@@ -160,8 +160,18 @@ static BOOL IsInsidePivotBar(UIView *v) {
     return NO;
 }
 
+static CGRect gPivotGlassFrame = {{0,0},{0,0}};
+
 static void StylePivotItem(UIView *item) {
-    if(IsInsidePivotBar(item))item.transform=CGAffineTransformMakeTranslation(0,8.0);
+    if(!IsInsidePivotBar(item))return;
+    UIView *pivot=item.superview;
+    while(pivot && ![NSStringFromClass(pivot.class)isEqualToString:@"YTPivotBarView"])pivot=pivot.superview;
+    if(!pivot||CGRectIsEmpty(gPivotGlassFrame))return;
+    CGPoint c=[item.superview convertPoint:item.center toView:pivot];
+    CGFloat untransformedY=c.y-item.transform.ty;
+    CGFloat delta=CGRectGetMidY(gPivotGlassFrame)-untransformedY+3.0;
+    delta=MAX(0.0,MIN(16.0,delta));
+    item.transform=CGAffineTransformMakeTranslation(0,delta);
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
@@ -175,6 +185,7 @@ static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
     if([effect respondsToSelector:setTint])((void(*)(id,SEL,id))objc_msgSend)(effect,setTint,UIColor.clearColor);
     CGFloat h=MIN(72.0,MAX(64.0,host.bounds.size.height-safe+10.0));
     ev.frame=CGRectMake(8.0,MAX(0.0,(host.bounds.size.height-safe-h)/2.0),MAX(0.0,host.bounds.size.width-16.0),h);
+    gPivotGlassFrame=ev.frame;
     ev.layer.cornerRadius=h/2.0; ev.layer.masksToBounds=YES; ev.layer.borderWidth=.75; ev.layer.borderColor=[UIColor colorWithWhite:1 alpha:.20].CGColor;
     [host sendSubviewToBack:ev]; host.clipsToBounds=NO; CenterPivotContent(host);
 }
