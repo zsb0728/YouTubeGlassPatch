@@ -3,34 +3,35 @@
 #import <objc/message.h>
 
 static const void *kYTGlassKey = &kYTGlassKey;
-static const void *kYTSelectionContainerKey = &kYTSelectionContainerKey;
-static const void *kYTLensDriverKey = &kYTLensDriverKey;
-static const void *kYTLensPanKey = &kYTLensPanKey;
-static CGRect gPivotGlassFrame = {{0,0},{0,0}};
-static CGPoint PivotVisualCenter(UIView *item,UIView *pivot);
-static UIView *PivotButton(UIView *item);
-static void SetSelectionFrame(UIView *container,CGRect frame){SEL s=sel_registerName("setSelectionViewFrame:");if([container respondsToSelector:s])((void(*)(id,SEL,CGRect))objc_msgSend)(container,s,frame);SEL u=sel_registerName("_updateSelectionViewFrame");if([container respondsToSelector:u])((void(*)(id,SEL))objc_msgSend)(container,u);}
+static const void *kYTNativeTabKey = &kYTNativeTabKey;
+static const void *kYTNativeDelegateKey = &kYTNativeDelegateKey;
+static const void *kYTNativeControllerKey = &kYTNativeControllerKey;
+static const void *kYTNativeWrapperKey = &kYTNativeWrapperKey;
 
-@interface YTGLensDriver : NSObject
-@property(nonatomic,weak) UIView*pivot;
-@property(nonatomic,strong) NSArray<UIView*>*items;
-@property(nonatomic) BOOL dragging;
-- (void)pan:(UIPanGestureRecognizer*)g;
+@interface YTGPassThroughView : UIView
+@property(nonatomic,weak) UITabBar *tabBar;
 @end
-
-static void TapPivotItem(UIView*item){SEL a=sel_registerName("didTapButton"),b=sel_registerName("doTap");if([item respondsToSelector:a])((void(*)(id,SEL))objc_msgSend)(item,a);else if([item respondsToSelector:b])((void(*)(id,SEL))objc_msgSend)(item,b);}
-
-@implementation YTGLensDriver
-- (void)pan:(UIPanGestureRecognizer*)g{
-    UIView*p=self.pivot;UIView*container=objc_getAssociatedObject(p,kYTSelectionContainerKey);if(!p||!container||!self.items.count)return;
-    if(g.state==UIGestureRecognizerStateBegan)self.dragging=YES;
-    CGPoint q=[g locationInView:p];CGFloat x=MAX(36.0,MIN(p.bounds.size.width-36.0,q.x));CGRect sf=CGRectMake(x-36,CGRectGetMidY(gPivotGlassFrame)-30,72,60);SetSelectionFrame(container,sf);
-    id lens=nil;SEL lensSel=sel_registerName("liquidLensView");if([container respondsToSelector:lensSel])lens=((id(*)(id,SEL))objc_msgSend)(container,lensSel);
-    SEL lifted=sel_registerName("setLifted:animated:alongsideAnimations:completion:");if(lens&&[lens respondsToSelector:lifted]&&g.state==UIGestureRecognizerStateBegan)((void(*)(id,SEL,BOOL,BOOL,id,id))objc_msgSend)(lens,lifted,YES,YES,nil,nil);
-    if(g.state==UIGestureRecognizerStateEnded||g.state==UIGestureRecognizerStateCancelled){NSInteger best=0;CGFloat d0=CGFLOAT_MAX;for(NSUInteger i=0;i<self.items.count;i++){UIView*it=self.items[i];CGPoint c=PivotVisualCenter(it,p);CGFloat d=fabs(c.x-x);if(d<d0){d0=d;best=i;}}UIView*it=self.items[best];CGPoint c=PivotVisualCenter(it,p);UIView*button=PivotButton(it);SEL content=sel_registerName("setLiftedContentView:");if(button&&[container respondsToSelector:content])((void(*)(id,SEL,id))objc_msgSend)(container,content,button);[UIView animateWithDuration:.32 delay:0 usingSpringWithDamping:.76 initialSpringVelocity:0 options:UIViewAnimationOptionBeginFromCurrentState animations:^{SetSelectionFrame(container,CGRectMake(c.x-36,CGRectGetMidY(gPivotGlassFrame)-30,72,60));}completion:^(__unused BOOL ok){self.dragging=NO;TapPivotItem(it);if(lens&&[lens respondsToSelector:lifted])((void(*)(id,SEL,BOOL,BOOL,id,id))objc_msgSend)(lens,lifted,NO,YES,nil,nil);}];}
+@implementation YTGPassThroughView
+- (UIView*)hitTest:(CGPoint)point withEvent:(UIEvent*)event {
+    if(self.tabBar){CGPoint p=[self convertPoint:point toView:self.tabBar];if([self.tabBar pointInside:p withEvent:event])return [self.tabBar hitTest:p withEvent:event];}
+    return nil;
 }
 @end
 
+@interface YTGNativeTabDelegate : NSObject <UITabBarControllerDelegate>
+@property(nonatomic,weak) UIView *pivot;
+@property(nonatomic,strong) NSArray<UIView*> *pivotItems;
+@property(nonatomic) BOOL syncing;
+@end
+@implementation YTGNativeTabDelegate
+- (void)tabBarController:(UITabBarController*)controller didSelectViewController:(UIViewController*)viewController {
+    if(self.syncing)return; NSInteger i=controller.selectedIndex;
+    if(i<0||i>=(NSInteger)self.pivotItems.count)return;
+    UIView *original=self.pivotItems[i]; SEL tap=sel_registerName("didTapButton"); SEL doTap=sel_registerName("doTap");
+    if([original respondsToSelector:tap])((void(*)(id,SEL))objc_msgSend)(original,tap);
+    else if([original respondsToSelector:doTap])((void(*)(id,SEL))objc_msgSend)(original,doTap);
+}
+@end
 typedef NS_ENUM(NSInteger, YTGKind) { YTGKindPivot, YTGKindPivotItem, YTGKindChip, YTGKindChipBar, YTGKindHeader, YTGKindSubheader, YTGKindAsyncCollection };
 typedef struct { Class cls; IMP original; YTGKind kind; } YTGHook;
 static YTGHook gHooks[12]; static int gHookCount = 0;
@@ -181,19 +182,14 @@ static BOOL ContainsPivotItem(UIView *v) {
     return NO;
 }
 
-static UIView *PivotButton(UIView *item){for(UIView*s in item.subviews)if([NSStringFromClass(s.class)isEqualToString:@"YTQTMButton"]&&!s.hidden&&s.bounds.size.width>20)return s;return nil;}
-static CGPoint PivotVisualCenter(UIView *item,UIView *pivot){UIView*b=PivotButton(item);return b?[b.superview convertPoint:b.center toView:pivot]:[item.superview convertPoint:item.center toView:pivot];}
-
-static void CenterPivotContent(UIView *host) {
-    CGFloat target=CGRectGetMidY(gPivotGlassFrame)+3.0;
-    NSMutableArray*stack=[NSMutableArray arrayWithArray:host.subviews];
-    while(stack.count){UIView*v=stack.lastObject;[stack removeLastObject];if([NSStringFromClass(v.class)isEqualToString:@"YTPivotBarItemView"]){for(UIView*s in v.subviews){NSString*n=NSStringFromClass(s.class);if(!([n isEqualToString:@"YTQTMButton"]||[n containsString:@"AccessibilityControl"]||[n containsString:@"IndicatorView"]||[n isEqualToString:@"YTTransferButton"]))continue;CGPoint c=[s.superview convertPoint:s.center toView:host];CGFloat base=c.y-s.transform.ty;s.transform=CGAffineTransformMakeTranslation(0,MAX(0.0,MIN(40.0,target-base)));}}else[stack addObjectsFromArray:v.subviews];}
-}
+static void CenterPivotContent(UIView *host) { (void)host; }
 
 static BOOL IsInsidePivotBar(UIView *v) {
     for(UIView *p=v.superview;p;p=p.superview)if([NSStringFromClass(p.class)isEqualToString:@"YTPivotBarView"])return YES;
     return NO;
 }
+
+static CGRect gPivotGlassFrame = {{0,0},{0,0}};
 
 static void StylePivotItem(UIView *item) {
     if(!IsInsidePivotBar(item))return;
@@ -214,30 +210,70 @@ static void StylePivotItem(UIView *item) {
     }
 }
 
-static void LensItems(UIView*v,NSMutableArray*out){if([NSStringFromClass(v.class)isEqualToString:@"YTPivotBarItemView"]){if(!v.hidden&&v.bounds.size.width>20)[out addObject:v];return;}for(UIView*s in v.subviews)LensItems(s,out);}
-static BOOL LensItemSelected(UIView*v){SEL s=sel_registerName("selected");return[v respondsToSelector:s]?((BOOL(*)(id,SEL))objc_msgSend)(v,s):NO;}
+static UIButton *ButtonInPivotItem(UIView *item) {
+    for(UIView *s in item.subviews)if([NSStringFromClass(s.class)isEqualToString:@"YTQTMButton"]&&s.bounds.size.width>20)return (UIButton*)s;
+    return nil;
+}
 
-static void SetupSystemLiquidLens(UIView*host,UIVisualEffectView*base,CGRect glassFrame){
-    NSMutableArray*items=[NSMutableArray array];LensItems(host,items);[items sortUsingComparator:^NSComparisonResult(UIView*a,UIView*b){CGPoint x=PivotVisualCenter(a,host),y=PivotVisualCenter(b,host);return x.x<y.x?NSOrderedAscending:NSOrderedDescending;}];if(items.count<2)return;
-    UIView*container=objc_getAssociatedObject(host,kYTSelectionContainerKey);if(!container){Class c=NSClassFromString(@"_UIFloatingTabBarSelectionContainerView");if(!c)return;container=[[c alloc]initWithFrame:host.bounds];container.userInteractionEnabled=NO;container.backgroundColor=UIColor.clearColor;[host insertSubview:container aboveSubview:base];objc_setAssociatedObject(host,kYTSelectionContainerKey,container,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}container.frame=host.bounds;
-    id lens=nil;SEL lensSel=sel_registerName("liquidLensView");if([container respondsToSelector:lensSel])lens=((id(*)(id,SEL))objc_msgSend)(container,lensSel);SEL warp=sel_registerName("setWarpsContentBelow:");if(lens&&[lens respondsToSelector:warp])((void(*)(id,SEL,BOOL))objc_msgSend)(lens,warp,YES);
-    UIView*selected=items.firstObject;for(UIView*i in items)if(LensItemSelected(i)){selected=i;break;}YTGLensDriver*existing=objc_getAssociatedObject(host,kYTLensDriverKey);if(!existing.dragging){CGPoint c=PivotVisualCenter(selected,host);SetSelectionFrame(container,CGRectMake(c.x-36,CGRectGetMidY(glassFrame)-30,72,60));UIView*button=PivotButton(selected);SEL content=sel_registerName("setLiftedContentView:");if(button&&[container respondsToSelector:content])((void(*)(id,SEL,id))objc_msgSend)(container,content,button);}
-    YTGLensDriver*d=existing;if(!d){d=[YTGLensDriver new];d.pivot=host;UIPanGestureRecognizer*g=[[UIPanGestureRecognizer alloc]initWithTarget:d action:@selector(pan:)];g.cancelsTouchesInView=NO;[host addGestureRecognizer:g];objc_setAssociatedObject(host,kYTLensPanKey,g,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(host,kYTLensDriverKey,d,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}d.items=items;
+static void CollectPivotItems(UIView *v,NSMutableArray<UIView*> *out) {
+    if([NSStringFromClass(v.class)isEqualToString:@"YTPivotBarItemView"]){
+        CGRect r=v.frame; UIButton*b=ButtonInPivotItem(v);
+        if(!v.hidden&&r.size.width>20&&r.size.height>=0&&b&&!b.hidden)[out addObject:v];
+        return;
+    }
+    if([v isKindOfClass:UITabBar.class])return;
+    for(UIView *s in v.subviews)CollectPivotItems(s,out);
+}
+
+static UIViewController *OwningViewController(UIView *v) {
+    for(UIResponder *r=v;r;r=r.nextResponder)if([r isKindOfClass:UIViewController.class])return (UIViewController*)r;
+    return nil;
+}
+
+static void ClearControllerLayers(UIView *v,UITabBar *bar){
+    if(v==bar)return;
+    v.backgroundColor=UIColor.clearColor;v.opaque=NO;
+    for(UIView*s in v.subviews)ClearControllerLayers(s,bar);
+}
+
+static void InstallNativeTabBar(UIView *pivot) {
+    NSMutableArray<UIView*> *pivotItems=[NSMutableArray array]; CollectPivotItems(pivot,pivotItems);
+    [pivotItems sortUsingComparator:^NSComparisonResult(UIView*a,UIView*b){CGRect ar=[a convertRect:a.bounds toView:pivot],br=[b convertRect:b.bounds toView:pivot];return CGRectGetMinX(ar)<CGRectGetMinX(br)?NSOrderedAscending:NSOrderedDescending;}];
+    if(pivotItems.count<2)return;
+    UITabBarController *controller=objc_getAssociatedObject(pivot,kYTNativeControllerKey);
+    YTGNativeTabDelegate *delegate=objc_getAssociatedObject(pivot,kYTNativeDelegateKey);
+    if(!controller){
+        controller=[UITabBarController new]; delegate=[YTGNativeTabDelegate new]; delegate.pivot=pivot; controller.delegate=delegate;
+        UIView *app=pivot.superview; UIViewController *owner=OwningViewController(pivot); if(owner)[owner addChildViewController:controller];
+        YTGPassThroughView *wrapper=[[YTGPassThroughView alloc]initWithFrame:app.bounds];wrapper.backgroundColor=UIColor.clearColor;wrapper.opaque=NO;wrapper.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+        controller.view.frame=wrapper.bounds;controller.view.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;[wrapper addSubview:controller.view];[app addSubview:wrapper];if(owner)[controller didMoveToParentViewController:owner];
+        UITabBar *bar=controller.tabBar;wrapper.tabBar=bar;ClearControllerLayers(controller.view,bar);
+        objc_setAssociatedObject(pivot,kYTNativeWrapperKey,wrapper,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(pivot,kYTNativeControllerKey,controller,OBJC_ASSOCIATION_RETAIN_NONATOMIC); objc_setAssociatedObject(pivot,kYTNativeTabKey,bar,OBJC_ASSOCIATION_ASSIGN); objc_setAssociatedObject(pivot,kYTNativeDelegateKey,delegate,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    NSMutableArray *controllers=[NSMutableArray array]; NSInteger selected=NSNotFound;
+    for(NSUInteger i=0;i<pivotItems.count;i++){
+        UIView *original=pivotItems[i]; UIButton*b=ButtonInPivotItem(original); UIImage *image=b.imageView.image; NSString *title=b.currentTitle?:b.titleLabel.text?:@"";
+        BOOL avatar=[title isEqualToString:@"我"]||[title localizedCaseInsensitiveContainsString:@"you"];
+        UIImageRenderingMode mode=avatar?UIImageRenderingModeAlwaysOriginal:UIImageRenderingModeAlwaysTemplate;
+        UIViewController *vc=[UIViewController new]; vc.view.backgroundColor=UIColor.clearColor;
+        vc.tabBarItem=[[UITabBarItem alloc]initWithTitle:title image:[image imageWithRenderingMode:mode] tag:(NSInteger)i]; vc.tabBarItem.selectedImage=[image imageWithRenderingMode:mode]; [controllers addObject:vc];
+        SEL selectedSEL=sel_registerName("selected"); if([original respondsToSelector:selectedSEL]&&((BOOL(*)(id,SEL))objc_msgSend)(original,selectedSEL))selected=i;
+        original.alpha=.01; original.userInteractionEnabled=NO;
+    }
+    delegate.pivotItems=pivotItems; delegate.syncing=YES; controller.viewControllers=controllers; if(selected!=NSNotFound)controller.selectedIndex=selected; delegate.syncing=NO;
+    UIView *app=pivot.superview;YTGPassThroughView*wrapper=objc_getAssociatedObject(pivot,kYTNativeWrapperKey);wrapper.frame=app.bounds;wrapper.hidden=pivot.hidden||CGRectGetMinY(pivot.frame)>=app.bounds.size.height-1;
+    controller.view.frame=wrapper.bounds;UITabBar*bar=controller.tabBar;wrapper.tabBar=bar;ClearControllerLayers(controller.view,bar);
+    for(UIViewController*vc in controller.viewControllers){vc.view.backgroundColor=UIColor.clearColor;vc.view.opaque=NO;}
+    [controller.view setNeedsLayout];[controller.view layoutIfNeeded];[app bringSubviewToFront:wrapper];
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
     host.transform=CGAffineTransformIdentity;
     ExtendRealFeedUnderPivot(host);
-    ClearSurface(host); ClearStructuralBackdrops(host,5); ClearShortAncestors(host,260.0); ClearBottomBarHierarchy(host);
+    ClearSurface(host); ClearShortAncestors(host,260.0); ClearBottomBarHierarchy(host);
+    UIView *oldGlass=objc_getAssociatedObject(host,kYTGlassKey); if(oldGlass){[oldGlass removeFromSuperview];objc_setAssociatedObject(host,kYTGlassKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
     UIView *app=host.superview; if(app)[app bringSubviewToFront:host];
-    CGFloat safe=host.safeAreaInsets.bottom; if(safe<1.0&&host.window)safe=host.window.safeAreaInsets.bottom;
-    UIVisualEffectView *ev=GlassForHost(host,YES); if(!ev)return;
-    ev.alpha=1.0;
-    CGFloat h=MIN(72.0,MAX(64.0,host.bounds.size.height-safe+10.0));
-    ev.frame=CGRectMake(8.0,MAX(0.0,(host.bounds.size.height-safe-h)/2.0),MAX(0.0,host.bounds.size.width-16.0),h);
-    gPivotGlassFrame=ev.frame;
-    ev.layer.cornerRadius=h/2.0; ev.layer.masksToBounds=YES; ev.layer.borderWidth=.75; ev.layer.borderColor=[UIColor colorWithWhite:1 alpha:.20].CGColor;
-    [host sendSubviewToBack:ev]; host.clipsToBounds=NO; CenterPivotContent(host); SetupSystemLiquidLens(host,ev,ev.frame);
+    host.clipsToBounds=NO; InstallNativeTabBar(host);
 }
 
 static void TintGlass(UIVisualEffectView *ev, BOOL selected) { (void)ev; (void)selected; }
