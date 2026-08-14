@@ -3,13 +3,6 @@
 #import <objc/message.h>
 
 static const void *kYTGlassKey = &kYTGlassKey;
-static const void *kYTBackdropKey = &kYTBackdropKey;
-static const void *kYTCaptureTimeKey = &kYTCaptureTimeKey;
-static BOOL gCapturingBackdrop = NO;
-static BOOL gRefreshScheduled = NO;
-static NSHashTable<UIView*> *gBackdropHosts;
-static IMP gSetOffsetIMP = NULL;
-static IMP gSetOffsetAnimatedIMP = NULL;
 typedef NS_ENUM(NSInteger, YTGKind) { YTGKindPivot, YTGKindChip, YTGKindChipBar, YTGKindHeader };
 typedef struct { Class cls; IMP original; YTGKind kind; } YTGHook;
 static YTGHook gHooks[12]; static int gHookCount = 0;
@@ -123,44 +116,21 @@ static void ExtendFeedBehindChipBar(UIView *host) {
     feed.backgroundColor=UIColor.clearColor; feed.opaque=NO;
 }
 
-static UIImageView *BackdropForHost(UIView *host) {
-    UIImageView *iv=objc_getAssociatedObject(host,kYTBackdropKey);
-    if(!iv){ iv=[[UIImageView alloc]initWithFrame:host.bounds]; iv.userInteractionEnabled=NO; iv.contentMode=UIViewContentModeScaleToFill; iv.clipsToBounds=YES; [host insertSubview:iv atIndex:0]; objc_setAssociatedObject(host,kYTBackdropKey,iv,OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
-    iv.frame=host.bounds; return iv;
-}
-
-static void UpdateSampledBackdrop(UIView *host, BOOL sampleAbove) {
-    if(!gBackdropHosts)gBackdropHosts=[NSHashTable weakObjectsHashTable];
-    [gBackdropHosts addObject:host];
-    if(gCapturingBackdrop || !host.window || host.bounds.size.width<10 || host.bounds.size.height<10)return;
-    CFTimeInterval now=CACurrentMediaTime(); NSNumber *last=objc_getAssociatedObject(host,kYTCaptureTimeKey);
-    if(last && now-last.doubleValue<0.16)return;
-    objc_setAssociatedObject(host,kYTCaptureTimeKey,@(now),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    UIWindow *w=host.window; CGRect hr=[host convertRect:host.bounds toView:w];
-    CGFloat h=MIN(MAX(host.bounds.size.height,54.0),110.0);
-    CGRect source=CGRectMake(MAX(0.0,hr.origin.x),sampleAbove?MAX(w.safeAreaInsets.top,CGRectGetMinY(hr)-h):MIN(CGRectGetHeight(w.bounds)-h,CGRectGetMaxY(hr)),MIN(hr.size.width,w.bounds.size.width),h);
-    if(source.size.width<10||source.size.height<10)return;
-    gCapturingBackdrop=YES; BOOL hidden=host.hidden; host.hidden=YES;
-    UIGraphicsBeginImageContextWithOptions(source.size,NO,UIScreen.mainScreen.scale);
-    CGContextRef c=UIGraphicsGetCurrentContext(); CGContextTranslateCTM(c,-source.origin.x,-source.origin.y);
-    [w.layer renderInContext:c]; UIImage *image=UIGraphicsGetImageFromCurrentImageContext(); UIGraphicsEndImageContext();
-    host.hidden=hidden; gCapturingBackdrop=NO;
-    UIImageView *iv=BackdropForHost(host); iv.image=image; iv.alpha=1.0; [host sendSubviewToBack:iv];
-    UIVisualEffectView *ev=objc_getAssociatedObject(host,kYTGlassKey); if(ev){ [host insertSubview:ev aboveSubview:iv]; }
-}
+static void UpdateSampledBackdrop(UIView *host, BOOL sampleAbove) { (void)host; (void)sampleAbove; }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
-    host.transform=CGAffineTransformIdentity;
-    ClearSurface(host); ClearStructuralBackdrops(host,5); ClearShortAncestors(host,220.0); ClearBottomBarHierarchy(host);
     UpdateSampledBackdrop(host,YES);
+    ClearSurface(host); ClearStructuralBackdrops(host,5); ClearShortAncestors(host,260.0); ClearBottomBarHierarchy(host);
     CGFloat safe=host.safeAreaInsets.bottom; if(safe<1.0&&host.window)safe=host.window.safeAreaInsets.bottom;
+    CGFloat lift=MAX(34.0,safe+12.0);
+    host.transform=CGAffineTransformMakeTranslation(0,-lift);
     UIVisualEffectView *ev=GlassForHost(host,YES); if(!ev)return;
-    ev.alpha=0.52; id effect=ev.effect; SEL setTint=sel_registerName("setTintColor:");
+    ev.alpha=1.0; id effect=ev.effect; SEL setTint=sel_registerName("setTintColor:");
     if([effect respondsToSelector:setTint])((void(*)(id,SEL,id))objc_msgSend)(effect,setTint,UIColor.clearColor);
     CGFloat h=MIN(72.0,MAX(64.0,host.bounds.size.height-safe+10.0));
     ev.frame=CGRectMake(8.0,MAX(0.0,(host.bounds.size.height-safe-h)/2.0),MAX(0.0,host.bounds.size.width-16.0),h);
     ev.layer.cornerRadius=h/2.0; ev.layer.masksToBounds=YES; ev.layer.borderWidth=.75; ev.layer.borderColor=[UIColor colorWithWhite:1 alpha:.20].CGColor;
-    UIImageView *bg=objc_getAssociatedObject(host,kYTBackdropKey); if(bg)[host insertSubview:ev aboveSubview:bg];
+    [host sendSubviewToBack:ev]; host.clipsToBounds=NO;
 }
 
 static void TintGlass(UIVisualEffectView *ev, BOOL selected) API_AVAILABLE(ios(26.0)) {
@@ -251,38 +221,8 @@ static void ScanWindows(void) {
     for(UIScene *scene in UIApplication.sharedApplication.connectedScenes) if([scene isKindOfClass:UIWindowScene.class]) for(UIWindow *w in ((UIWindowScene*)scene).windows)Scan(w);
 }
 
-static void RefreshBackdropHosts(void) {
-    for(UIView *host in gBackdropHosts.allObjects) {
-        if(!host.window || host.hidden || host.alpha<.01)continue;
-        NSString *n=NSStringFromClass(host.class);
-        UpdateSampledBackdrop(host,[n containsString:@"PivotBar"]);
-    }
-}
-
-static void ScheduleBackdropRefresh(void) {
-    if(gCapturingBackdrop || gRefreshScheduled)return;
-    gRefreshScheduled=YES;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.10*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
-        gRefreshScheduled=NO; RefreshBackdropHosts();
-    });
-}
-
-static void GlassSetContentOffset(UIScrollView *self,SEL cmd,CGPoint p) {
-    ((void(*)(id,SEL,CGPoint))gSetOffsetIMP)(self,cmd,p); ScheduleBackdropRefresh();
-}
-static void GlassSetContentOffsetAnimated(UIScrollView *self,SEL cmd,CGPoint p,BOOL animated) {
-    ((void(*)(id,SEL,CGPoint,BOOL))gSetOffsetAnimatedIMP)(self,cmd,p,animated); ScheduleBackdropRefresh();
-}
-
-static void InstallScrollRefresh(void) {
-    Method m=class_getInstanceMethod(UIScrollView.class,@selector(setContentOffset:));
-    gSetOffsetIMP=method_getImplementation(m); method_setImplementation(m,(IMP)GlassSetContentOffset);
-    Method a=class_getInstanceMethod(UIScrollView.class,@selector(setContentOffset:animated:));
-    gSetOffsetAnimatedIMP=method_getImplementation(a); method_setImplementation(a,(IMP)GlassSetContentOffsetAnimated);
-}
-
 static void LifecyclePulse(void) {
-    if(UIApplication.sharedApplication.applicationState==UIApplicationStateActive){ ScanWindows(); RefreshBackdropHosts(); }
+    if(UIApplication.sharedApplication.applicationState==UIApplicationStateActive)ScanWindows();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.75*NSEC_PER_SEC)),dispatch_get_main_queue(),^{LifecyclePulse();});
 }
 
@@ -294,8 +234,8 @@ __attribute__((constructor)) static void StartYouTubeGlassV3(void) {
         InstallHook("YTGhostChipCell",YTGKindChip);
         InstallHook("YTFilterChipBarView",YTGKindChipBar);
         InstallHook("YTHeaderView",YTGKindHeader);
-        InstallScrollRefresh(); LifecyclePulse();
-        [[NSNotificationCenter defaultCenter]addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification*n){ScanWindows(); ScheduleBackdropRefresh();}];
+        LifecyclePulse();
+        [[NSNotificationCenter defaultCenter]addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification*n){ScanWindows();}];
         for(int i=1;i<=24;i++)dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(i*.25*NSEC_PER_SEC)),dispatch_get_main_queue(),^{ScanWindows();});
     });
 }
