@@ -225,9 +225,9 @@ static void ClearTabControllerChrome(UIView *v,UITabBar *bar) {
     for(UIView*s in v.subviews)ClearTabControllerChrome(s,bar);
 }
 
-static void ConfigureRealtimeTabGlass(UITabBar *bar) {
+static void ConfigureTransparentInteractiveTab(UITabBar *bar) {
     bar.translucent=YES;bar.backgroundColor=UIColor.clearColor;bar.opaque=NO;
-    UITabBarAppearance *ap=[UITabBarAppearance new];[ap configureWithTransparentBackground];ap.backgroundColor=UIColor.clearColor;ap.shadowColor=UIColor.clearColor;ap.backgroundEffect=NewNativeGlass(NO);
+    UITabBarAppearance *ap=[UITabBarAppearance new];[ap configureWithTransparentBackground];ap.backgroundColor=UIColor.clearColor;ap.shadowColor=UIColor.clearColor;ap.backgroundEffect=nil;
     bar.standardAppearance=ap;if([bar respondsToSelector:@selector(setScrollEdgeAppearance:)])bar.scrollEdgeAppearance=ap;
 }
 
@@ -242,7 +242,7 @@ static void InstallNativeTabBar(UIView *pivot) {
         UIViewController *owner=OwningViewController(pivot); if(owner){[owner addChildViewController:controller];}
         controller.view.frame=pivot.bounds; controller.view.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight; controller.view.backgroundColor=UIColor.clearColor;
         [pivot addSubview:controller.view]; if(owner)[controller didMoveToParentViewController:owner]; [controller.view setNeedsLayout]; [controller.view layoutIfNeeded];
-        UITabBar *bar=controller.tabBar; ConfigureRealtimeTabGlass(bar); ClearTabControllerChrome(controller.view,bar);
+        UITabBar *bar=controller.tabBar; ConfigureTransparentInteractiveTab(bar); ClearTabControllerChrome(controller.view,bar);
         objc_setAssociatedObject(pivot,kYTNativeControllerKey,controller,OBJC_ASSOCIATION_RETAIN_NONATOMIC); objc_setAssociatedObject(pivot,kYTNativeTabKey,bar,OBJC_ASSOCIATION_ASSIGN); objc_setAssociatedObject(pivot,kYTNativeDelegateKey,delegate,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     NSMutableArray *controllers=[NSMutableArray array]; NSInteger selected=NSNotFound;
@@ -257,7 +257,7 @@ static void InstallNativeTabBar(UIView *pivot) {
     }
     delegate.pivotItems=pivotItems; delegate.syncing=YES; controller.viewControllers=controllers; if(selected!=NSNotFound)controller.selectedIndex=selected; delegate.syncing=NO;
     controller.view.frame=pivot.bounds; controller.view.backgroundColor=UIColor.clearColor;controller.view.opaque=NO;
-    UITabBar *bar=controller.tabBar;ConfigureRealtimeTabGlass(bar);ClearTabControllerChrome(controller.view,bar);
+    UITabBar *bar=controller.tabBar;ConfigureTransparentInteractiveTab(bar);ClearTabControllerChrome(controller.view,bar);
     for(UIViewController*vc in controller.viewControllers){vc.view.backgroundColor=UIColor.clearColor;vc.view.opaque=NO;}
     [controller.view setNeedsLayout]; [controller.view layoutIfNeeded]; [pivot bringSubviewToFront:controller.view];
 }
@@ -266,7 +266,8 @@ static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
     host.transform=CGAffineTransformIdentity;
     ExtendRealFeedUnderPivot(host);
     ClearSurface(host); ClearShortAncestors(host,260.0); ClearBottomBarHierarchy(host);
-    UIView *oldGlass=objc_getAssociatedObject(host,kYTGlassKey); if(oldGlass){[oldGlass removeFromSuperview];objc_setAssociatedObject(host,kYTGlassKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
+    CGFloat safe=host.safeAreaInsets.bottom;if(safe<1.0&&host.window)safe=host.window.safeAreaInsets.bottom;
+    UIVisualEffectView *glass=GlassForHost(host,NO);if(glass){CGFloat h=MIN(72.0,MAX(64.0,host.bounds.size.height-safe+10.0));glass.alpha=1.0;glass.frame=CGRectMake(8.0,MAX(0.0,(host.bounds.size.height-safe-h)/2.0),MAX(0.0,host.bounds.size.width-16.0),h);glass.layer.cornerRadius=h/2;glass.layer.masksToBounds=YES;[host sendSubviewToBack:glass];}
     UIView *app=host.superview; if(app)[app bringSubviewToFront:host];
     host.clipsToBounds=NO; InstallNativeTabBar(host);
 }
