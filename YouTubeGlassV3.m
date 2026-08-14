@@ -8,6 +8,14 @@ static const void *kYTNativeDelegateKey = &kYTNativeDelegateKey;
 static const void *kYTNativeControllerKey = &kYTNativeControllerKey;
 static const void *kYTNativeWrapperKey = &kYTNativeWrapperKey;
 static const void *kYTPortalKey = &kYTPortalKey;
+static const void *kYTPortalSourceKey = &kYTPortalSourceKey;
+static const void *kYTItemSignatureKey = &kYTItemSignatureKey;
+static const void *kYTFeedKey = &kYTFeedKey;
+
+@interface YTGWeakBox : NSObject
+@property(nonatomic,weak) id value;
+@end
+@implementation YTGWeakBox @end
 
 @interface YTGPassThroughView : UIView
 @property(nonatomic,weak) UITabBar *tabBar;
@@ -52,7 +60,10 @@ static id NewNativeGlass(BOOL interactive) API_AVAILABLE(ios(26.0)) {
 }
 
 static void ClearSurface(UIView *v) {
-    if (!v) return; v.opaque = NO; v.backgroundColor = UIColor.clearColor; v.layer.backgroundColor = nil;
+    if(!v)return;
+    if(v.opaque)v.opaque=NO;
+    if(v.backgroundColor&&![v.backgroundColor isEqual:UIColor.clearColor])v.backgroundColor=UIColor.clearColor;
+    if(v.layer.backgroundColor)v.layer.backgroundColor=nil;
 }
 
 static UIVisualEffectView *GlassForHost(UIView *host, BOOL interactive) API_AVAILABLE(ios(26.0)) {
@@ -95,7 +106,7 @@ static void ClearShortAncestors(UIView *host, CGFloat maxHeight) {
 static void ClearBottomBarHierarchy(UIView *host) {
     UIView *pathChild=host, *p=host.superview;
     for(int level=0; p && level<7 && ![p isKindOfClass:UIWindow.class]; level++,pathChild=p,p=p.superview) {
-        ClearSurface(p); p.clipsToBounds=NO;
+        ClearSurface(p);if(p.clipsToBounds)p.clipsToBounds=NO;
         CGRect hostRect=[host convertRect:host.bounds toView:p];
         for(UIView *s in p.subviews) {
             if(s==pathChild || [s isKindOfClass:UICollectionView.class] || [s isKindOfClass:UIScrollView.class]) continue;
@@ -158,23 +169,27 @@ static void FindMainCollections(UIView *v,UIView *app,UIView *pivot,NSMutableArr
 }
 
 static void ExtendRealFeedUnderPivot(UIView *pivot) {
-    UIView *app=pivot.superview; if(![NSStringFromClass(app.class)isEqualToString:@"YTAppView"])return;
+    UIView *app=pivot.superview;if(![NSStringFromClass(app.class)isEqualToString:@"YTAppView"])return;
     if(CGRectGetMinY(pivot.frame)>=app.bounds.size.height-1.0)return;
-    NSMutableArray *feeds=[NSMutableArray array];
-    for(UIView *s in app.subviews) if(s!=pivot)FindMainCollections(s,app,pivot,feeds);
-    UIScrollView *best=nil; CGFloat bestGap=CGFLOAT_MAX;
-    for(UIScrollView *f in feeds){CGRect r=[f convertRect:f.bounds toView:app];CGFloat gap=fabs(CGRectGetMaxY(r)-CGRectGetMinY(pivot.frame));if(gap<bestGap){bestGap=gap;best=f;}}
-    if(!best||bestGap>4.0)return;
-    UIView *node=best;
-    while(node && node!=app){
-        UIView *superview=node.superview; if(!superview)break;
-        CGPoint bottom=[app convertPoint:CGPointMake(0,CGRectGetMaxY(app.bounds)) toView:superview];
-        CGRect f=node.frame; CGFloat newHeight=bottom.y-CGRectGetMinY(f);
-        if(newHeight>f.size.height){f.size.height=newHeight;node.frame=f;}
-        node.clipsToBounds=NO; node=superview;
+    YTGWeakBox*box=objc_getAssociatedObject(pivot,kYTFeedKey);UIScrollView*best=box.value;
+    if(!best||!best.window){
+        NSMutableArray*feeds=[NSMutableArray array];
+        for(UIView*s in app.subviews)if(s!=pivot)FindMainCollections(s,app,pivot,feeds);
+        CGFloat bestGap=CGFLOAT_MAX;best=nil;
+        for(UIScrollView*f in feeds){CGRect r=[f convertRect:f.bounds toView:app];CGFloat gap=fabs(CGRectGetMaxY(r)-CGRectGetMinY(pivot.frame));if(gap<bestGap){bestGap=gap;best=f;}}
+        if(!best||bestGap>4.0)return;
+        if(!box){box=[YTGWeakBox new];objc_setAssociatedObject(pivot,kYTFeedKey,box,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}box.value=best;
     }
-    UIEdgeInsets in=best.contentInset; in.bottom=MAX(in.bottom,pivot.bounds.size.height); best.contentInset=in;
-    UIEdgeInsets si=best.scrollIndicatorInsets; si.bottom=MAX(si.bottom,pivot.bounds.size.height); best.scrollIndicatorInsets=si;
+    UIView*node=best;
+    while(node&&node!=app){
+        UIView*superview=node.superview;if(!superview)break;
+        CGPoint bottom=[app convertPoint:CGPointMake(0,CGRectGetMaxY(app.bounds)) toView:superview];
+        CGRect f=node.frame;CGFloat newHeight=bottom.y-CGRectGetMinY(f);
+        if(newHeight>f.size.height+.5){f.size.height=newHeight;node.frame=f;}
+        if(node.clipsToBounds)node.clipsToBounds=NO;node=superview;
+    }
+    UIEdgeInsets in=best.contentInset;CGFloat bottom=MAX(in.bottom,pivot.bounds.size.height);if(fabs(in.bottom-bottom)>.5){in.bottom=bottom;best.contentInset=in;}
+    UIEdgeInsets si=best.scrollIndicatorInsets;bottom=MAX(si.bottom,pivot.bounds.size.height);if(fabs(si.bottom-bottom)>.5){si.bottom=bottom;best.scrollIndicatorInsets=si;}
 }
 
 static BOOL ContainsPivotItem(UIView *v) {
@@ -226,6 +241,12 @@ static void CollectPivotItems(UIView *v,NSMutableArray<UIView*> *out) {
     for(UIView *s in v.subviews)CollectPivotItems(s,out);
 }
 
+static NSString*PivotSignature(NSArray<UIView*>*items){
+    NSMutableString*s=[NSMutableString stringWithFormat:@"%lu|",(unsigned long)items.count];
+    for(UIView*v in items){UIButton*b=ButtonInPivotItem(v);[s appendFormat:@"%@:%p|",b.currentTitle?:b.titleLabel.text?:@"",b.imageView.image];}
+    return s;
+}
+
 static UIViewController *OwningViewController(UIView *v) {
     for(UIResponder *r=v;r;r=r.nextResponder)if([r isKindOfClass:UIViewController.class])return (UIViewController*)r;
     return nil;
@@ -239,54 +260,57 @@ static UIView *YouTubeContentSource(UIView*app,UIView*pivot,UIView*wrapper){
 
 static UIView *EnsurePortal(UIViewController*vc,UIView*source){
     if(!source)return nil;UIView*portal=objc_getAssociatedObject(vc,kYTPortalKey);Class c=NSClassFromString(@"_UIPortalView");if(!c)return nil;
-    if(!portal){SEL init=sel_registerName("initWithSourceView:");id obj=((id(*)(id,SEL))objc_msgSend)(c,@selector(alloc));portal=[obj respondsToSelector:init]?((id(*)(id,SEL,id))objc_msgSend)(obj,init,source):[[c alloc]initWithFrame:vc.view.bounds];portal.userInteractionEnabled=NO;[vc.view insertSubview:portal atIndex:0];objc_setAssociatedObject(vc,kYTPortalKey,portal,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
-    SEL setSource=sel_registerName("setSourceView:");if([portal respondsToSelector:setSource])((void(*)(id,SEL,id))objc_msgSend)(portal,setSource,source);
-    for(NSString*k in @[@"setAllowsBackdropGroups:",@"setMatchesPosition:",@"setMatchesTransform:",@"setMatchesAlpha:"]){SEL s=sel_registerName(k.UTF8String);if([portal respondsToSelector:s])((void(*)(id,SEL,BOOL))objc_msgSend)(portal,s,YES);}SEL hit=sel_registerName("setAllowsHitTesting:");if([portal respondsToSelector:hit])((void(*)(id,SEL,BOOL))objc_msgSend)(portal,hit,NO);SEL hide=sel_registerName("setHidesSourceView:");if([portal respondsToSelector:hide])((void(*)(id,SEL,BOOL))objc_msgSend)(portal,hide,NO);
-    portal.frame=vc.view.bounds;portal.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;return portal;
+    if(!portal){
+        SEL init=sel_registerName("initWithSourceView:");id obj=((id(*)(id,SEL))objc_msgSend)(c,@selector(alloc));portal=[obj respondsToSelector:init]?((id(*)(id,SEL,id))objc_msgSend)(obj,init,source):[[c alloc]initWithFrame:vc.view.bounds];
+        portal.userInteractionEnabled=NO;portal.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;[vc.view insertSubview:portal atIndex:0];objc_setAssociatedObject(vc,kYTPortalKey,portal,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        for(NSString*k in @[@"setAllowsBackdropGroups:",@"setMatchesPosition:",@"setMatchesTransform:"]){SEL s=sel_registerName(k.UTF8String);if([portal respondsToSelector:s])((void(*)(id,SEL,BOOL))objc_msgSend)(portal,s,YES);}
+        SEL alpha=sel_registerName("setMatchesAlpha:");if([portal respondsToSelector:alpha])((void(*)(id,SEL,BOOL))objc_msgSend)(portal,alpha,NO);
+        SEL hit=sel_registerName("setAllowsHitTesting:");if([portal respondsToSelector:hit])((void(*)(id,SEL,BOOL))objc_msgSend)(portal,hit,NO);SEL hide=sel_registerName("setHidesSourceView:");if([portal respondsToSelector:hide])((void(*)(id,SEL,BOOL))objc_msgSend)(portal,hide,NO);
+    }
+    YTGWeakBox*box=objc_getAssociatedObject(vc,kYTPortalSourceKey);UIView*old=box.value;
+    if(source!=old){SEL setSource=sel_registerName("setSourceView:");if([portal respondsToSelector:setSource]){[CATransaction begin];[CATransaction setDisableActions:YES];((void(*)(id,SEL,id))objc_msgSend)(portal,setSource,source);[CATransaction commit];}if(!box){box=[YTGWeakBox new];objc_setAssociatedObject(vc,kYTPortalSourceKey,box,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}box.value=source;}
+    if(!CGRectEqualToRect(portal.frame,vc.view.bounds))portal.frame=vc.view.bounds;
+    return portal;
 }
 
 static void ClearControllerLayers(UIView *v,UITabBar *bar){
-    if(v==bar)return;
-    v.backgroundColor=UIColor.clearColor;v.opaque=NO;
+    if(v==bar||[NSStringFromClass(v.class)containsString:@"Portal"])return;
+    ClearSurface(v);
     for(UIView*s in v.subviews)ClearControllerLayers(s,bar);
 }
 
 static void InstallNativeTabBar(UIView *pivot) {
-    NSMutableArray<UIView*> *pivotItems=[NSMutableArray array]; CollectPivotItems(pivot,pivotItems);
+    NSMutableArray<UIView*>*pivotItems=[NSMutableArray array];CollectPivotItems(pivot,pivotItems);
     [pivotItems sortUsingComparator:^NSComparisonResult(UIView*a,UIView*b){CGRect ar=[a convertRect:a.bounds toView:pivot],br=[b convertRect:b.bounds toView:pivot];return CGRectGetMinX(ar)<CGRectGetMinX(br)?NSOrderedAscending:NSOrderedDescending;}];
     if(pivotItems.count<2)return;
-    UITabBarController *controller=objc_getAssociatedObject(pivot,kYTNativeControllerKey);
-    YTGNativeTabDelegate *delegate=objc_getAssociatedObject(pivot,kYTNativeDelegateKey);
-    if(!controller){
-        controller=[UITabBarController new]; delegate=[YTGNativeTabDelegate new]; delegate.pivot=pivot; controller.delegate=delegate;
-        UIView *app=pivot.superview; UIViewController *owner=OwningViewController(app); if(owner)[owner addChildViewController:controller];
-        YTGPassThroughView *wrapper=[[YTGPassThroughView alloc]initWithFrame:app.bounds];wrapper.backgroundColor=UIColor.clearColor;wrapper.opaque=NO;wrapper.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
-        controller.view.frame=wrapper.bounds;controller.view.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;[wrapper addSubview:controller.view];[app addSubview:wrapper];if(owner)[controller didMoveToParentViewController:owner];
-        UITabBar *bar=controller.tabBar;wrapper.tabBar=bar;ClearControllerLayers(controller.view,bar);
-        objc_setAssociatedObject(pivot,kYTNativeWrapperKey,wrapper,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(pivot,kYTNativeControllerKey,controller,OBJC_ASSOCIATION_RETAIN_NONATOMIC); objc_setAssociatedObject(pivot,kYTNativeTabKey,bar,OBJC_ASSOCIATION_ASSIGN); objc_setAssociatedObject(pivot,kYTNativeDelegateKey,delegate,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UITabBarController*controller=objc_getAssociatedObject(pivot,kYTNativeControllerKey);YTGNativeTabDelegate*delegate=objc_getAssociatedObject(pivot,kYTNativeDelegateKey);BOOL created=controller==nil;
+    if(created){
+        controller=[UITabBarController new];delegate=[YTGNativeTabDelegate new];delegate.pivot=pivot;controller.delegate=delegate;
+        UIView*app=pivot.superview;UIViewController*owner=OwningViewController(app);if(owner)[owner addChildViewController:controller];
+        YTGPassThroughView*w=[[YTGPassThroughView alloc]initWithFrame:app.bounds];w.backgroundColor=UIColor.clearColor;w.opaque=NO;w.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+        controller.view.frame=w.bounds;controller.view.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;[w addSubview:controller.view];[app addSubview:w];if(owner)[controller didMoveToParentViewController:owner];
+        UITabBar*bar=controller.tabBar;w.tabBar=bar;objc_setAssociatedObject(pivot,kYTNativeWrapperKey,w,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(pivot,kYTNativeControllerKey,controller,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(pivot,kYTNativeTabKey,bar,OBJC_ASSOCIATION_ASSIGN);objc_setAssociatedObject(pivot,kYTNativeDelegateKey,delegate,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    BOOL rebuild=controller.viewControllers.count!=pivotItems.count;NSMutableArray *controllers=rebuild?[NSMutableArray array]:[controller.viewControllers mutableCopy];NSInteger selected=NSNotFound;
-    for(NSUInteger i=0;i<pivotItems.count;i++){
-        UIView *original=pivotItems[i]; UIButton*b=ButtonInPivotItem(original); UIImage *image=b.imageView.image; NSString *title=b.currentTitle?:b.titleLabel.text?:@"";
-        BOOL avatar=[title isEqualToString:@"我"]||[title localizedCaseInsensitiveContainsString:@"you"];UIImageRenderingMode mode=avatar?UIImageRenderingModeAlwaysOriginal:UIImageRenderingModeAlwaysTemplate;
-        UIViewController *vc=rebuild?[UIViewController new]:controllers[i];vc.view.backgroundColor=UIColor.clearColor;vc.view.opaque=NO;
-        if(rebuild)[controllers addObject:vc];vc.tabBarItem=[[UITabBarItem alloc]initWithTitle:title image:[image imageWithRenderingMode:mode] tag:(NSInteger)i];vc.tabBarItem.selectedImage=[image imageWithRenderingMode:mode];
-        SEL selectedSEL=sel_registerName("selected");if([original respondsToSelector:selectedSEL]&&((BOOL(*)(id,SEL))objc_msgSend)(original,selectedSEL))selected=i;original.alpha=.01;original.userInteractionEnabled=NO;
+    NSString*sig=PivotSignature(pivotItems);NSString*oldSig=objc_getAssociatedObject(pivot,kYTItemSignatureKey);BOOL rebuild=created||controller.viewControllers.count!=pivotItems.count||![sig isEqualToString:oldSig];NSInteger selected=NSNotFound;
+    for(NSUInteger i=0;i<pivotItems.count;i++){UIView*original=pivotItems[i];SEL selectedSEL=sel_registerName("selected");if([original respondsToSelector:selectedSEL]&&((BOOL(*)(id,SEL))objc_msgSend)(original,selectedSEL))selected=i;if(original.alpha!=.01)original.alpha=.01;if(original.userInteractionEnabled)original.userInteractionEnabled=NO;}
+    if(rebuild){
+        NSMutableArray*controllers=[NSMutableArray arrayWithCapacity:pivotItems.count];
+        for(NSUInteger i=0;i<pivotItems.count;i++){UIView*original=pivotItems[i];UIButton*b=ButtonInPivotItem(original);UIImage*image=b.imageView.image;NSString*title=b.currentTitle?:b.titleLabel.text?:@"";BOOL avatar=[title isEqualToString:@"我"]||[title localizedCaseInsensitiveContainsString:@"you"];UIImageRenderingMode mode=avatar?UIImageRenderingModeAlwaysOriginal:UIImageRenderingModeAlwaysTemplate;UIViewController*vc=[UIViewController new];UIImage*rendered=[image imageWithRenderingMode:mode];vc.view.backgroundColor=UIColor.clearColor;vc.view.opaque=NO;vc.tabBarItem=[[UITabBarItem alloc]initWithTitle:title image:rendered tag:(NSInteger)i];vc.tabBarItem.selectedImage=rendered;[controllers addObject:vc];}
+        delegate.syncing=YES;controller.viewControllers=controllers;delegate.syncing=NO;objc_setAssociatedObject(pivot,kYTItemSignatureKey,sig,OBJC_ASSOCIATION_COPY_NONATOMIC);
     }
-    delegate.pivotItems=pivotItems;delegate.syncing=YES;if(rebuild)controller.viewControllers=controllers;if(selected!=NSNotFound&&controller.selectedIndex!=selected)controller.selectedIndex=selected;delegate.syncing=NO;
-    UIView *app=pivot.superview;YTGPassThroughView*wrapper=objc_getAssociatedObject(pivot,kYTNativeWrapperKey);wrapper.frame=app.bounds;wrapper.hidden=pivot.hidden||CGRectGetMinY(pivot.frame)>=app.bounds.size.height-1;
-    controller.view.frame=wrapper.bounds;UITabBar*bar=controller.tabBar;wrapper.tabBar=bar;ClearControllerLayers(controller.view,bar);
-    UIView*source=YouTubeContentSource(app,pivot,wrapper);EnsurePortal(controller,source);for(UIViewController*vc in controller.viewControllers){vc.view.backgroundColor=UIColor.clearColor;vc.view.opaque=NO;}
-    [controller.view setNeedsLayout];[controller.view layoutIfNeeded];[app bringSubviewToFront:wrapper];
+    delegate.pivotItems=pivotItems;if(selected!=NSNotFound&&controller.selectedIndex!=selected){delegate.syncing=YES;controller.selectedIndex=selected;delegate.syncing=NO;}
+    UIView*app=pivot.superview;YTGPassThroughView*w=objc_getAssociatedObject(pivot,kYTNativeWrapperKey);if(!CGRectEqualToRect(w.frame,app.bounds))w.frame=app.bounds;BOOL hidden=pivot.hidden||CGRectGetMinY(pivot.frame)>=app.bounds.size.height-1;if(w.hidden!=hidden)w.hidden=hidden;
+    if(!CGRectEqualToRect(controller.view.frame,w.bounds))controller.view.frame=w.bounds;UITabBar*bar=controller.tabBar;w.tabBar=bar;
+    if(created||rebuild){ClearControllerLayers(controller.view,bar);[controller.view setNeedsLayout];[controller.view layoutIfNeeded];}
+    UIView*source=YouTubeContentSource(app,pivot,w);EnsurePortal(controller,source);if(app.subviews.lastObject!=w)[app bringSubviewToFront:w];
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
-    host.transform=CGAffineTransformIdentity;
+    if(!CGAffineTransformIsIdentity(host.transform))host.transform=CGAffineTransformIdentity;
     ExtendRealFeedUnderPivot(host);
-    ClearSurface(host); ClearShortAncestors(host,260.0); ClearBottomBarHierarchy(host);
-    UIView *oldGlass=objc_getAssociatedObject(host,kYTGlassKey); if(oldGlass){[oldGlass removeFromSuperview];objc_setAssociatedObject(host,kYTGlassKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
-    UIView *app=host.superview; if(app)[app bringSubviewToFront:host];
-    host.clipsToBounds=NO; InstallNativeTabBar(host);
+    ClearSurface(host);ClearShortAncestors(host,260.0);ClearBottomBarHierarchy(host);
+    UIView*oldGlass=objc_getAssociatedObject(host,kYTGlassKey);if(oldGlass){[oldGlass removeFromSuperview];objc_setAssociatedObject(host,kYTGlassKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
+    if(host.clipsToBounds)host.clipsToBounds=NO;InstallNativeTabBar(host);
 }
 
 static void TintGlass(UIVisualEffectView *ev, BOOL selected) { (void)ev; (void)selected; }
@@ -305,7 +329,7 @@ static void StyleChip(UIView *host) API_AVAILABLE(ios(26.0)) {
 static void StyleChipBar(UIView *host) API_AVAILABLE(ios(26.0)) {
     ClearSurface(host); ClearShortAncestors(host,240.0);
     UpdateSampledBackdrop(host,NO);
-    for(UIView *p=host.superview; p && ![p isKindOfClass:UIWindow.class]; p=p.superview) {
+    for (UIView *p=host.superview; p && ![p isKindOfClass:UIWindow.class]; p=p.superview) {
         if(p.bounds.size.height>260.0) break;
         ClearSurface(p);
     }
@@ -408,15 +432,9 @@ static void ScanWindows(void) {
     for(UIScene *scene in UIApplication.sharedApplication.connectedScenes) if([scene isKindOfClass:UIWindowScene.class]) for(UIWindow *w in ((UIWindowScene*)scene).windows)Scan(w);
 }
 
-static void LifecyclePulse(void) {
-    if(UIApplication.sharedApplication.applicationState==UIApplicationStateActive)ScanWindows();
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.75*NSEC_PER_SEC)),dispatch_get_main_queue(),^{LifecyclePulse();});
-}
-
 __attribute__((constructor)) static void StartYouTubeGlassV3(void) {
     dispatch_async(dispatch_get_main_queue(),^{
         InstallHook("YTPivotBarView",YTGKindPivot);
-        InstallHook("YTPivotBarItemView",YTGKindPivotItem);
         InstallHook("YTChipCloudChipView",YTGKindChip);
         InstallHook("YTChipCloudChipCell",YTGKindChip);
         InstallHook("YTGhostChipCell",YTGKindChip);
@@ -424,8 +442,7 @@ __attribute__((constructor)) static void StartYouTubeGlassV3(void) {
         InstallHook("YTHeaderView",YTGKindHeader);
         InstallHook("YTSubheaderContainerView",YTGKindSubheader);
         InstallHook("YTAsyncCollectionView",YTGKindAsyncCollection);
-        LifecyclePulse();
         [[NSNotificationCenter defaultCenter]addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification*n){ScanWindows();}];
-        for(int i=1;i<=24;i++)dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(i*.25*NSEC_PER_SEC)),dispatch_get_main_queue(),^{ScanWindows();});
+        for(NSNumber*d in @[@0.15,@0.5,@1.0,@2.0,@4.0])dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(d.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(),^{ScanWindows();});
     });
 }
