@@ -23,17 +23,13 @@ static __weak UIView *gYTWrapper;
 static NSInteger gYTWatchControllerCount;
 static BOOL gYTSystemTabHidden;
 static __weak UIView *gYTWatchBranch;
-static __weak UIView *gYTMiniPlayerBranch;
-static BOOL gYTOverlayReady;
 static const void *kYTWatchActiveKey = &kYTWatchActiveKey;
 static IMP gYTWatchWillAppearIMP;
 static IMP gYTWatchWillDisappearIMP;
 static IMP gYTWatchDidDisappearIMP;
 static void InstallNativeTabBar(UIView *pivot);
 static void SetPersistentSystemTabBarHidden(BOOL hidden,BOOL animated);
-static BOOL PreparePortalForCurrentFeed(void);
-static UIView*FindOfficialMiniPlayerBranch(UIView*app);
-static void UpdateOfficialMiniPlayerOrder(void);
+static void PreparePortalForCurrentFeed(void);
 
 @interface YTGPassThroughView : UIView
 @property(nonatomic,weak) UITabBar *tabBar;
@@ -272,8 +268,8 @@ static UIViewController *OwningViewController(UIView *v) {
 static void SetPersistentSystemTabBarHidden(BOOL hidden,BOOL animated){
     UIView*pivot=gYTPivot;UITabBarController*controller=objc_getAssociatedObject(pivot,kYTNativeControllerKey);UIView*wrapper=gYTWrapper;if(!controller||!wrapper)return;BOOL changed=gYTSystemTabHidden!=hidden;gYTSystemTabHidden=hidden;
     SEL setHidden=sel_registerName("setTabBarHidden:animated:");if(changed&&[controller respondsToSelector:setHidden])((void(*)(id,SEL,BOOL,BOOL))objc_msgSend)(controller,setHidden,hidden,animated);else if(changed)controller.tabBar.hidden=hidden;
-    UIView*app=pivot.superview;if(wrapper.superview==app){UIView*mini=(gYTMiniPlayerBranch||gYTWatchBranch||gYTWatchControllerCount>0)?FindOfficialMiniPlayerBranch(app):nil;gYTMiniPlayerBranch=mini;if(mini&&mini.superview==app)[app insertSubview:wrapper belowSubview:mini];else if(gYTWatchBranch&&gYTWatchBranch.superview==app)[app insertSubview:wrapper belowSubview:gYTWatchBranch];else if(hidden)[app sendSubviewToBack:wrapper];else if(gYTWatchControllerCount==0)[app bringSubviewToFront:wrapper];}
-    wrapper.hidden=NO;wrapper.alpha=gYTOverlayReady?1.0:.01;wrapper.userInteractionEnabled=gYTOverlayReady&&!hidden;
+    UIView*app=pivot.superview;if(wrapper.superview==app){if(gYTWatchBranch&&gYTWatchBranch.superview==app)[app insertSubview:wrapper belowSubview:gYTWatchBranch];else if(hidden)[app sendSubviewToBack:wrapper];else if(gYTWatchControllerCount==0)[app bringSubviewToFront:wrapper];}
+    wrapper.hidden=NO;wrapper.alpha=1.0;wrapper.userInteractionEnabled=!hidden;
 }
 
 static UIView*WatchBranchForController(id controller){
@@ -292,8 +288,7 @@ static void WatchWillDisappear(id self,SEL cmd,BOOL animated){
 
 static void WatchDidDisappear(id self,SEL cmd,BOOL animated){
     if(gYTWatchDidDisappearIMP)((void(*)(id,SEL,BOOL))gYTWatchDidDisappearIMP)(self,cmd,animated);BOOL wasActive=[objc_getAssociatedObject(self,kYTWatchActiveKey)boolValue];if(!wasActive)return;
-    objc_setAssociatedObject(self,kYTWatchActiveKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);gYTWatchControllerCount=MAX(0,gYTWatchControllerCount-1);SetPersistentSystemTabBarHidden(NO,NO);UpdateOfficialMiniPlayerOrder();
-    for(NSNumber*d in @[@0.0,@0.03,@0.10,@0.25])dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(d.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(),^{UpdateOfficialMiniPlayerOrder();});
+    objc_setAssociatedObject(self,kYTWatchActiveKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);gYTWatchControllerCount=MAX(0,gYTWatchControllerCount-1);gYTWatchBranch=nil;SetPersistentSystemTabBarHidden(NO,NO);
 }
 
 static void InstallWatchControllerHooks(void){
@@ -328,22 +323,8 @@ static UIView*CurrentFeedPortalSource(UIView*app,UIView*pivot,UIView*wrapper){
     return nil;
 }
 
-static BOOL PreparePortalForCurrentFeed(void){
-    UIView*pivot=gYTPivot,*app=pivot.superview,*wrapper=gYTWrapper;if(!pivot||!app||!wrapper)return NO;UITabBarController*controller=objc_getAssociatedObject(pivot,kYTNativeControllerKey);UIView*source=CurrentFeedPortalSource(app,pivot,wrapper);return source&&EnsurePortal(controller,source)!=nil;
-}
-
-static BOOL ContainsVisibleOfficialMiniPlayer(UIView*v,UIWindow*w){
-    if(v.hidden||v.alpha<.05)return NO;NSString*n=NSStringFromClass(v.class);BOOL named=[n containsString:@"MiniBar"]||[n containsString:@"Miniplayer"]||[n containsString:@"MiniPlayer"];
-    if(named&&v.window){CGRect r=CGRectIntersection([v convertRect:v.bounds toView:w],w.bounds);if(!CGRectIsNull(r)&&!CGRectIsEmpty(r)&&r.size.width>80&&r.size.height>28)return YES;}
-    for(UIView*s in v.subviews)if(ContainsVisibleOfficialMiniPlayer(s,w))return YES;return NO;
-}
-
-static UIView*FindOfficialMiniPlayerBranch(UIView*app){
-    UIWindow*w=app.window;if(!w)return nil;for(UIView*s in app.subviews.reverseObjectEnumerator){if(s==gYTWrapper||s==gYTPivot)continue;if(ContainsVisibleOfficialMiniPlayer(s,w))return s;}return nil;
-}
-
-static void UpdateOfficialMiniPlayerOrder(void){
-    UIView*app=gYTPivot.superview,*wrapper=gYTWrapper;if(!app||!wrapper||wrapper.superview!=app)return;UIView*mini=FindOfficialMiniPlayerBranch(app);gYTMiniPlayerBranch=mini;if(mini&&mini.superview==app)[app insertSubview:wrapper belowSubview:mini];
+static void PreparePortalForCurrentFeed(void){
+    UIView*pivot=gYTPivot,*app=pivot.superview,*wrapper=gYTWrapper;if(!pivot||!app||!wrapper)return;UITabBarController*controller=objc_getAssociatedObject(pivot,kYTNativeControllerKey);UIView*source=CurrentFeedPortalSource(app,pivot,wrapper);if(source)EnsurePortal(controller,source);
 }
 
 static void ClearControllerLayers(UIView *v,UITabBar *bar){
@@ -360,12 +341,12 @@ static void InstallNativeTabBar(UIView *pivot) {
     if(created){
         controller=[UITabBarController new];delegate=[YTGNativeTabDelegate new];delegate.pivot=pivot;controller.delegate=delegate;
         UIView*app=pivot.superview;UIViewController*owner=OwningViewController(app);if(owner)[owner addChildViewController:controller];
-        YTGPassThroughView*w=[[YTGPassThroughView alloc]initWithFrame:app.bounds];w.backgroundColor=UIColor.clearColor;w.opaque=NO;w.alpha=.01;w.userInteractionEnabled=NO;w.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;gYTOverlayReady=NO;
+        YTGPassThroughView*w=[[YTGPassThroughView alloc]initWithFrame:app.bounds];w.backgroundColor=UIColor.clearColor;w.opaque=NO;w.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
         controller.view.frame=w.bounds;controller.view.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;[w addSubview:controller.view];[app addSubview:w];if(owner)[controller didMoveToParentViewController:owner];
         UITabBar*bar=controller.tabBar;w.tabBar=bar;objc_setAssociatedObject(pivot,kYTNativeWrapperKey,w,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(pivot,kYTNativeControllerKey,controller,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(pivot,kYTNativeTabKey,bar,OBJC_ASSOCIATION_ASSIGN);objc_setAssociatedObject(pivot,kYTNativeDelegateKey,delegate,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     NSString*sig=PivotSignature(pivotItems);NSString*oldSig=objc_getAssociatedObject(pivot,kYTItemSignatureKey);BOOL rebuild=created||controller.viewControllers.count!=pivotItems.count||![sig isEqualToString:oldSig];NSInteger selected=NSNotFound;
-    for(NSUInteger i=0;i<pivotItems.count;i++){UIView*original=pivotItems[i];SEL selectedSEL=sel_registerName("selected");if([original respondsToSelector:selectedSEL]&&((BOOL(*)(id,SEL))objc_msgSend)(original,selectedSEL))selected=i;}
+    for(NSUInteger i=0;i<pivotItems.count;i++){UIView*original=pivotItems[i];SEL selectedSEL=sel_registerName("selected");if([original respondsToSelector:selectedSEL]&&((BOOL(*)(id,SEL))objc_msgSend)(original,selectedSEL))selected=i;if(original.alpha!=.01)original.alpha=.01;if(original.userInteractionEnabled)original.userInteractionEnabled=NO;}
     if(rebuild){
         NSMutableArray*controllers=[NSMutableArray arrayWithCapacity:pivotItems.count];
         for(NSUInteger i=0;i<pivotItems.count;i++){UIView*original=pivotItems[i];UIButton*b=ButtonInPivotItem(original);UIImage*image=b.imageView.image;NSString*title=b.currentTitle?:b.titleLabel.text?:@"";BOOL avatar=[title isEqualToString:@"我"]||[title localizedCaseInsensitiveContainsString:@"you"];UIImageRenderingMode mode=avatar?UIImageRenderingModeAlwaysOriginal:UIImageRenderingModeAlwaysTemplate;UIViewController*vc=[UIViewController new];UIImage*rendered=[image imageWithRenderingMode:mode];vc.view.backgroundColor=UIColor.clearColor;vc.view.opaque=NO;vc.tabBarItem=[[UITabBarItem alloc]initWithTitle:title image:rendered tag:(NSInteger)i];vc.tabBarItem.selectedImage=rendered;[controllers addObject:vc];}
@@ -373,11 +354,10 @@ static void InstallNativeTabBar(UIView *pivot) {
     }
     delegate.pivotItems=pivotItems;if(selected!=NSNotFound&&controller.selectedIndex!=selected){delegate.syncing=YES;controller.selectedIndex=selected;delegate.syncing=NO;}
     UIView*app=pivot.superview;YTGPassThroughView*w=objc_getAssociatedObject(pivot,kYTNativeWrapperKey);gYTPivot=pivot;gYTWrapper=w;if(w.superview!=app)return;if(!CGRectEqualToRect(w.frame,app.bounds))w.frame=app.bounds;
-    if(gYTWatchBranch&&gYTWatchBranch.superview==app)[app insertSubview:w belowSubview:gYTWatchBranch];else if(gYTSystemTabHidden)[app sendSubviewToBack:w];else[app bringSubviewToFront:w];w.hidden=NO;
+    if(gYTWatchBranch&&gYTWatchBranch.superview==app)[app insertSubview:w belowSubview:gYTWatchBranch];else if(gYTSystemTabHidden)[app sendSubviewToBack:w];else[app bringSubviewToFront:w];w.hidden=NO;w.alpha=1.0;w.userInteractionEnabled=!gYTSystemTabHidden;
     if(!CGRectEqualToRect(controller.view.frame,w.bounds))controller.view.frame=w.bounds;UITabBar*bar=controller.tabBar;w.tabBar=bar;
     if(created||rebuild){ClearControllerLayers(controller.view,bar);[controller.view setNeedsLayout];[controller.view layoutIfNeeded];}
-    BOOL portalReady=gYTOverlayReady||(gYTWatchControllerCount==0&&PreparePortalForCurrentFeed());if(portalReady&&!gYTOverlayReady){[controller.view setNeedsLayout];[controller.view layoutIfNeeded];[CATransaction flush];[CATransaction begin];[CATransaction setDisableActions:YES];gYTOverlayReady=YES;for(UIView*original in pivotItems){original.alpha=.01;original.userInteractionEnabled=NO;}w.alpha=1.0;w.userInteractionEnabled=!gYTSystemTabHidden;[CATransaction commit];[CATransaction flush];}else if(gYTOverlayReady){for(UIView*original in pivotItems){original.alpha=.01;original.userInteractionEnabled=NO;}w.alpha=1.0;w.userInteractionEnabled=!gYTSystemTabHidden;}else{for(UIView*original in pivotItems){original.alpha=1.0;original.userInteractionEnabled=YES;}w.alpha=.01;w.userInteractionEnabled=NO;}
-    SetPersistentSystemTabBarHidden(gYTWatchControllerCount>0,NO);if(gYTMiniPlayerBranch||gYTWatchBranch||gYTWatchControllerCount>0)UpdateOfficialMiniPlayerOrder();
+    if(gYTWatchControllerCount==0)PreparePortalForCurrentFeed();SetPersistentSystemTabBarHidden(gYTWatchControllerCount>0,NO);
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
