@@ -22,12 +22,14 @@ static __weak UIView *gYTPivot;
 static __weak UIView *gYTWrapper;
 static NSInteger gYTWatchControllerCount;
 static BOOL gYTSystemTabHidden;
+static __weak UIView *gYTWatchBranch;
 static const void *kYTWatchActiveKey = &kYTWatchActiveKey;
 static IMP gYTWatchWillAppearIMP;
 static IMP gYTWatchWillDisappearIMP;
 static IMP gYTWatchDidDisappearIMP;
 static void InstallNativeTabBar(UIView *pivot);
 static void SetPersistentSystemTabBarHidden(BOOL hidden,BOOL animated);
+static void PreparePortalForCurrentFeed(void);
 
 @interface YTGPassThroughView : UIView
 @property(nonatomic,weak) UITabBar *tabBar;
@@ -266,23 +268,27 @@ static UIViewController *OwningViewController(UIView *v) {
 static void SetPersistentSystemTabBarHidden(BOOL hidden,BOOL animated){
     UIView*pivot=gYTPivot;UITabBarController*controller=objc_getAssociatedObject(pivot,kYTNativeControllerKey);UIView*wrapper=gYTWrapper;if(!controller||!wrapper)return;BOOL changed=gYTSystemTabHidden!=hidden;gYTSystemTabHidden=hidden;
     SEL setHidden=sel_registerName("setTabBarHidden:animated:");if(changed&&[controller respondsToSelector:setHidden])((void(*)(id,SEL,BOOL,BOOL))objc_msgSend)(controller,setHidden,hidden,animated);else if(changed)controller.tabBar.hidden=hidden;
-    UIView*app=pivot.superview,*host=app.superview;if(host&&wrapper.superview==host){if(hidden)[host insertSubview:wrapper belowSubview:app];else[host insertSubview:wrapper aboveSubview:app];}
+    UIView*app=pivot.superview;if(wrapper.superview==app){if(gYTWatchBranch&&gYTWatchBranch.superview==app)[app insertSubview:wrapper belowSubview:gYTWatchBranch];else if(hidden)[app sendSubviewToBack:wrapper];else if(gYTWatchControllerCount==0)[app bringSubviewToFront:wrapper];}
     wrapper.hidden=NO;wrapper.alpha=1.0;wrapper.userInteractionEnabled=!hidden;
+}
+
+static UIView*WatchBranchForController(id controller){
+    UIView*app=gYTPivot.superview,*v=[controller view];if(!app||!v)return nil;while(v.superview&&v.superview!=app)v=v.superview;return v.superview==app?v:nil;
 }
 
 static void WatchWillAppear(id self,SEL cmd,BOOL animated){
     if(![objc_getAssociatedObject(self,kYTWatchActiveKey)boolValue]){objc_setAssociatedObject(self,kYTWatchActiveKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);gYTWatchControllerCount++;}
-    SetPersistentSystemTabBarHidden(YES,animated);if(gYTWatchWillAppearIMP)((void(*)(id,SEL,BOOL))gYTWatchWillAppearIMP)(self,cmd,animated);
+    if(gYTWatchWillAppearIMP)((void(*)(id,SEL,BOOL))gYTWatchWillAppearIMP)(self,cmd,animated);gYTWatchBranch=WatchBranchForController(self);SetPersistentSystemTabBarHidden(YES,animated);
 }
 
 static void WatchWillDisappear(id self,SEL cmd,BOOL animated){
-    if(gYTWatchWillDisappearIMP)((void(*)(id,SEL,BOOL))gYTWatchWillDisappearIMP)(self,cmd,animated);SetPersistentSystemTabBarHidden(NO,animated);
+    if(gYTWatchWillDisappearIMP)((void(*)(id,SEL,BOOL))gYTWatchWillDisappearIMP)(self,cmd,animated);gYTWatchBranch=WatchBranchForController(self);PreparePortalForCurrentFeed();SetPersistentSystemTabBarHidden(NO,animated);
     id coordinator=[self transitionCoordinator];SEL animate=sel_registerName("animateAlongsideTransition:completion:");if([coordinator respondsToSelector:animate])((BOOL(*)(id,SEL,id,id))objc_msgSend)(coordinator,animate,nil,^(id context){SEL cancelled=sel_registerName("isCancelled");if([context respondsToSelector:cancelled]&&((BOOL(*)(id,SEL))objc_msgSend)(context,cancelled))SetPersistentSystemTabBarHidden(YES,NO);});
 }
 
 static void WatchDidDisappear(id self,SEL cmd,BOOL animated){
     if(gYTWatchDidDisappearIMP)((void(*)(id,SEL,BOOL))gYTWatchDidDisappearIMP)(self,cmd,animated);BOOL wasActive=[objc_getAssociatedObject(self,kYTWatchActiveKey)boolValue];if(!wasActive)return;
-    objc_setAssociatedObject(self,kYTWatchActiveKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);gYTWatchControllerCount=MAX(0,gYTWatchControllerCount-1);SetPersistentSystemTabBarHidden(NO,NO);
+    objc_setAssociatedObject(self,kYTWatchActiveKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);gYTWatchControllerCount=MAX(0,gYTWatchControllerCount-1);gYTWatchBranch=nil;SetPersistentSystemTabBarHidden(NO,NO);
 }
 
 static void InstallWatchControllerHooks(void){
@@ -305,6 +311,20 @@ static UIView *EnsurePortal(UIViewController*vc,UIView*source){
     if(source!=old){SEL setSource=sel_registerName("setSourceView:");if([portal respondsToSelector:setSource]){[CATransaction begin];[CATransaction setDisableActions:YES];((void(*)(id,SEL,id))objc_msgSend)(portal,setSource,source);[CATransaction commit];}if(!box){box=[YTGWeakBox new];objc_setAssociatedObject(vc,kYTPortalSourceKey,box,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}box.value=source;}
     if(!CGRectEqualToRect(portal.frame,vc.view.bounds))portal.frame=vc.view.bounds;
     return portal;
+}
+
+static BOOL ContainsFeedCollection(UIView*v,UIView*app){
+    if([NSStringFromClass(v.class)isEqualToString:@"YTAsyncCollectionView"]){CGRect r=[v convertRect:v.bounds toView:app];if(r.size.width>app.bounds.size.width*.82&&r.size.height>app.bounds.size.height*.35)return YES;}
+    for(UIView*s in v.subviews)if(ContainsFeedCollection(s,app))return YES;return NO;
+}
+
+static UIView*CurrentFeedPortalSource(UIView*app,UIView*pivot,UIView*wrapper){
+    for(UIView*s in app.subviews.reverseObjectEnumerator){if(s==pivot||s==wrapper||s==gYTWatchBranch)continue;NSString*n=NSStringFromClass(s.class);if([n isEqualToString:@"UILayoutContainerView"]&&ContainsFeedCollection(s,app))return s;}
+    return nil;
+}
+
+static void PreparePortalForCurrentFeed(void){
+    UIView*pivot=gYTPivot,*app=pivot.superview,*wrapper=gYTWrapper;if(!pivot||!app||!wrapper)return;UITabBarController*controller=objc_getAssociatedObject(pivot,kYTNativeControllerKey);UIView*source=CurrentFeedPortalSource(app,pivot,wrapper);if(source)EnsurePortal(controller,source);
 }
 
 static void ClearControllerLayers(UIView *v,UITabBar *bar){
@@ -333,11 +353,11 @@ static void InstallNativeTabBar(UIView *pivot) {
         delegate.syncing=YES;controller.viewControllers=controllers;delegate.syncing=NO;objc_setAssociatedObject(pivot,kYTItemSignatureKey,sig,OBJC_ASSOCIATION_COPY_NONATOMIC);
     }
     delegate.pivotItems=pivotItems;if(selected!=NSNotFound&&controller.selectedIndex!=selected){delegate.syncing=YES;controller.selectedIndex=selected;delegate.syncing=NO;}
-    UIView*app=pivot.superview,*host=app.superview?:app;YTGPassThroughView*w=objc_getAssociatedObject(pivot,kYTNativeWrapperKey);gYTPivot=pivot;gYTWrapper=w;CGRect target=host==app?app.bounds:app.frame;if(!CGRectEqualToRect(w.frame,target))w.frame=target;
-    if(w.superview!=host){[w removeFromSuperview];[host addSubview:w];}if(gYTSystemTabHidden&&host!=app)[host insertSubview:w belowSubview:app];else if(host!=app)[host insertSubview:w aboveSubview:app];w.hidden=NO;w.alpha=1.0;w.userInteractionEnabled=!gYTSystemTabHidden;
+    UIView*app=pivot.superview;YTGPassThroughView*w=objc_getAssociatedObject(pivot,kYTNativeWrapperKey);gYTPivot=pivot;gYTWrapper=w;if(w.superview!=app)return;if(!CGRectEqualToRect(w.frame,app.bounds))w.frame=app.bounds;
+    if(gYTWatchBranch&&gYTWatchBranch.superview==app)[app insertSubview:w belowSubview:gYTWatchBranch];else if(gYTSystemTabHidden)[app sendSubviewToBack:w];else[app bringSubviewToFront:w];w.hidden=NO;w.alpha=1.0;w.userInteractionEnabled=!gYTSystemTabHidden;
     if(!CGRectEqualToRect(controller.view.frame,w.bounds))controller.view.frame=w.bounds;UITabBar*bar=controller.tabBar;w.tabBar=bar;
     if(created||rebuild){ClearControllerLayers(controller.view,bar);[controller.view setNeedsLayout];[controller.view layoutIfNeeded];}
-    EnsurePortal(controller,app);SetPersistentSystemTabBarHidden(gYTWatchControllerCount>0,NO);
+    if(gYTWatchControllerCount==0)PreparePortalForCurrentFeed();SetPersistentSystemTabBarHidden(gYTWatchControllerCount>0,NO);
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
