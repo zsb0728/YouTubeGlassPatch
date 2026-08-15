@@ -30,11 +30,16 @@ static NSInteger gYTReturnCandidateHits;
 static const void *kYTWatchActiveKey = &kYTWatchActiveKey;
 static IMP gYTWatchWillAppearIMP;
 static IMP gYTWatchDidDisappearIMP;
+static NSInteger gYTPreReturnOriginalIndex=NSNotFound;
+static CFTimeInterval gYTPreReturnNotBefore;
+static NSInteger gYTPreReturnNeighborIndex=NSNotFound;
+static UIView *gYTReturnCover;
+static UIView *gYTLastGoodTabSnapshot;
 static void ScheduleSafeOverlayRebuild(void);
 static void InstallNativeTabBar(UIView *pivot);
-static void RefreshExistingPortalToCurrentFeed(void);
 static void RefreshFloatingTabProvider(UITabBarController*controller);
 static void ScheduleColdProviderRefresh(UITabBarController*controller);
+static void CycleYouTubePageBeforeWatchReturn(void);
 
 @interface YTGPassThroughView : UIView
 @property(nonatomic,weak) UITabBar *tabBar;
@@ -46,6 +51,12 @@ static void ScheduleColdProviderRefresh(UITabBarController*controller);
 }
 @end
 
+static void ActivateOriginalPivotItem(UIView*original){
+    if(!original)return;SEL tap=sel_registerName("didTapButton");SEL doTap=sel_registerName("doTap");
+    if([original respondsToSelector:tap])((void(*)(id,SEL))objc_msgSend)(original,tap);
+    else if([original respondsToSelector:doTap])((void(*)(id,SEL))objc_msgSend)(original,doTap);
+}
+
 @interface YTGNativeTabDelegate : NSObject <UITabBarControllerDelegate>
 @property(nonatomic,weak) UIView *pivot;
 @property(nonatomic,strong) NSArray<UIView*> *pivotItems;
@@ -56,9 +67,7 @@ static void ScheduleColdProviderRefresh(UITabBarController*controller);
 - (void)tabBarController:(UITabBarController*)controller didSelectViewController:(UIViewController*)viewController {
     if(self.syncing||CACurrentMediaTime()<self.suppressUntil)return; NSInteger i=controller.selectedIndex;
     if(i<0||i>=(NSInteger)self.pivotItems.count)return;
-    UIView *original=self.pivotItems[i]; SEL tap=sel_registerName("didTapButton"); SEL doTap=sel_registerName("doTap");
-    if([original respondsToSelector:tap])((void(*)(id,SEL))objc_msgSend)(original,tap);
-    else if([original respondsToSelector:doTap])((void(*)(id,SEL))objc_msgSend)(original,doTap);
+    UIView *original=self.pivotItems[i];ActivateOriginalPivotItem(original);
 }
 @end
 typedef NS_ENUM(NSInteger, YTGKind) { YTGKindPivot, YTGKindPivotItem, YTGKindChip, YTGKindChipBar, YTGKindHeader, YTGKindSubheader, YTGKindAsyncCollection, YTGKindWatch };
@@ -279,17 +288,57 @@ static BOOL ViewIsActuallyVisible(UIView*v){
 }
 
 static BOOL WatchIsActive(void){
-    if(gYTWatchControllerCount>0)return YES;
+    if(gYTWatchControllerCount>0)return YES;if(gYTReturningFromWatch)return NO;
     for(UIView*v in gYTWatchViews)if(ViewIsActuallyVisible(v))return YES;
     return NO;
 }
 
 static void UpdateSystemTabVisibility(void){
-    UIView*wrapper=gYTWrapper;if(!wrapper)return;
-    BOOL hidden=WatchIsActive();if(wrapper.hidden!=hidden)wrapper.hidden=hidden;wrapper.alpha=1.0;wrapper.userInteractionEnabled=!hidden;
+    UIView*wrapper=gYTWrapper;if(!wrapper)return;BOOL watch=WatchIsActive();
+    if(wrapper.hidden!=watch)wrapper.hidden=watch;
+    wrapper.alpha=(!watch&&gYTReturningFromWatch)?.01:1.0;wrapper.userInteractionEnabled=!watch&&!gYTReturningFromWatch;
+}
+
+static void CancelPendingWatchReturn(void){
+    gYTReturnGeneration++;gYTReturningFromWatch=NO;gYTReturnCandidate=nil;gYTReturnCandidateHits=0;gYTPreReturnOriginalIndex=NSNotFound;gYTPreReturnNotBefore=0;
+    [gYTReturnCover removeFromSuperview];gYTReturnCover=nil;
+}
+
+static void CoverAutomaticPageCycle(void){
+    UIView*app=gYTPivot.superview;if(!app)return;[gYTReturnCover removeFromSuperview];UIView*cover=gYTLastGoodTabSnapshot;
+    if(!cover)cover=[app snapshotViewAfterScreenUpdates:YES];if(!cover)return;[cover removeFromSuperview];cover.frame=app.bounds;cover.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;cover.userInteractionEnabled=YES;[app addSubview:cover];gYTReturnCover=cover;
+}
+
+static void CacheLastGoodGlassFrame(void){
+    UIView*w=gYTWrapper;if(!w||w.hidden||w.alpha<.5)return;UIView*s=[w snapshotViewAfterScreenUpdates:NO];if(!s)return;[gYTLastGoodTabSnapshot removeFromSuperview];gYTLastGoodTabSnapshot=s;
+}
+
+static BOOL PivotItemSelected(UIView*item){SEL s=sel_registerName("selected");return item&&[item respondsToSelector:s]&&((BOOL(*)(id,SEL))objc_msgSend)(item,s);}
+
+static void WaitForOriginalTabSelection(NSInteger generation,NSInteger attempt){
+    if(generation!=gYTReturnGeneration||!gYTReturningFromWatch||WatchIsActive())return;YTGNativeTabDelegate*d=objc_getAssociatedObject(gYTPivot,kYTNativeDelegateKey);NSArray<UIView*>*items=d.pivotItems;
+    if(gYTPreReturnOriginalIndex<(NSInteger)items.count&&(PivotItemSelected(items[gYTPreReturnOriginalIndex])||attempt>=8)){gYTReturnCandidate=nil;gYTReturnCandidateHits=0;gYTPreReturnNotBefore=CACurrentMediaTime()+.025;return;}
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(.03*NSEC_PER_SEC)),dispatch_get_main_queue(),^{WaitForOriginalTabSelection(generation,attempt+1);});
+}
+
+static void WaitForNeighborTabSelection(NSInteger generation,NSInteger attempt){
+    if(generation!=gYTReturnGeneration||!gYTReturningFromWatch||WatchIsActive())return;UIView*pivot=gYTPivot;UITabBarController*controller=objc_getAssociatedObject(pivot,kYTNativeControllerKey);YTGNativeTabDelegate*d=objc_getAssociatedObject(pivot,kYTNativeDelegateKey);NSArray<UIView*>*items=d.pivotItems;
+    BOOL ready=gYTPreReturnNeighborIndex<(NSInteger)items.count&&PivotItemSelected(items[gYTPreReturnNeighborIndex]);if(!ready&&attempt<7){dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(.03*NSEC_PER_SEC)),dispatch_get_main_queue(),^{WaitForNeighborTabSelection(generation,attempt+1);});return;}
+    if(gYTPreReturnOriginalIndex>=(NSInteger)items.count)return;d.syncing=YES;d.suppressUntil=CACurrentMediaTime()+.6;ActivateOriginalPivotItem(items[gYTPreReturnOriginalIndex]);[UIView performWithoutAnimation:^{controller.selectedIndex=gYTPreReturnOriginalIndex;}];d.syncing=NO;WaitForOriginalTabSelection(generation,0);
+}
+
+static void CycleYouTubePageBeforeWatchReturn(void){
+    UIView*pivot=gYTPivot;UITabBarController*controller=objc_getAssociatedObject(pivot,kYTNativeControllerKey);YTGNativeTabDelegate*d=objc_getAssociatedObject(pivot,kYTNativeDelegateKey);NSArray<UIView*>*items=d.pivotItems;if(!controller||items.count<2){gYTPreReturnNotBefore=CACurrentMediaTime()+.08;return;}
+    NSInteger current=controller.selectedIndex;if(current<0||current>=(NSInteger)items.count)current=0;NSInteger neighbor=NSNotFound;
+    for(NSInteger i=0;i<(NSInteger)items.count;i++){UIButton*b=ButtonInPivotItem(items[i]);NSString*t=b.currentTitle?:b.titleLabel.text?:@"";if(i!=current&&([t isEqualToString:@"我"]||[t localizedCaseInsensitiveContainsString:@"you"])){neighbor=i;break;}}
+    if(neighbor==NSNotFound)neighbor=current==0?(NSInteger)items.count-1:0;
+    NSInteger generation=gYTReturnGeneration;gYTPreReturnOriginalIndex=current;gYTPreReturnNeighborIndex=neighbor;d.syncing=YES;d.suppressUntil=CACurrentMediaTime()+.8;
+    [UIView performWithoutAnimation:^{controller.selectedIndex=neighbor;}];ActivateOriginalPivotItem(items[neighbor]);d.syncing=NO;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(.025*NSEC_PER_SEC)),dispatch_get_main_queue(),^{WaitForNeighborTabSelection(generation,0);});
 }
 
 static void WatchWillAppear(id self,SEL cmd,BOOL animated){
+    CacheLastGoodGlassFrame();CancelPendingWatchReturn();
     if(![objc_getAssociatedObject(self,kYTWatchActiveKey)boolValue]){objc_setAssociatedObject(self,kYTWatchActiveKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);gYTWatchControllerCount++;}
     UpdateSystemTabVisibility();if(gYTWatchWillAppearIMP)((void(*)(id,SEL,BOOL))gYTWatchWillAppearIMP)(self,cmd,animated);
 }
@@ -298,9 +347,9 @@ static void WatchDidDisappear(id self,SEL cmd,BOOL animated){
     if(gYTWatchDidDisappearIMP)((void(*)(id,SEL,BOOL))gYTWatchDidDisappearIMP)(self,cmd,animated);
     BOOL wasActive=[objc_getAssociatedObject(self,kYTWatchActiveKey)boolValue];if(!wasActive)return;
     objc_setAssociatedObject(self,kYTWatchActiveKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);gYTWatchControllerCount=MAX(0,gYTWatchControllerCount-1);
-    gYTReturningFromWatch=YES;gYTReturnGeneration++;gYTReturnCandidate=nil;gYTReturnCandidateHits=0;
+    gYTReturningFromWatch=YES;gYTReturnGeneration++;gYTReturnCandidate=nil;gYTReturnCandidateHits=0;gYTPreReturnNotBefore=CGFLOAT_MAX;
     YTGWeakBox*feedBox=objc_getAssociatedObject(gYTPivot,kYTFeedKey);feedBox.value=nil;objc_setAssociatedObject(gYTPivot,kYTConfiguredKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    RefreshExistingPortalToCurrentFeed();UpdateSystemTabVisibility();ScheduleSafeOverlayRebuild();
+    UpdateSystemTabVisibility();CoverAutomaticPageCycle();CycleYouTubePageBeforeWatchReturn();ScheduleSafeOverlayRebuild();
 }
 
 static void InstallWatchControllerHooks(void){
@@ -370,22 +419,22 @@ static void RebindExistingPortal(UIView*source){
     YTGWeakBox*box=objc_getAssociatedObject(controller,kYTPortalSourceKey);if(!box){box=[YTGWeakBox new];objc_setAssociatedObject(controller,kYTPortalSourceKey,box,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}box.value=source;[CATransaction flush];RefreshFloatingTabProvider(controller);
 }
 
-static void RefreshExistingPortalToCurrentFeed(void){
-    UIView*pivot=gYTPivot;UIView*app=pivot.superview;UIView*w=gYTWrapper;if(!pivot||!app||!w)return;
-    UIView*source=YouTubeContentSource(app,pivot,w);if(source)RebindExistingPortal(source);
+static void FinishWatchReturn(UIView*source){
+    UIView*app=gYTPivot.superview;if(source)RebindExistingPortal(source);[CATransaction begin];[CATransaction setDisableActions:YES];gYTReturningFromWatch=NO;gYTPreReturnOriginalIndex=NSNotFound;gYTPreReturnNeighborIndex=NSNotFound;gYTPreReturnNotBefore=0;UpdateSystemTabVisibility();[gYTReturnCover removeFromSuperview];gYTReturnCover=nil;[app setNeedsLayout];[app layoutIfNeeded];[CATransaction commit];[CATransaction flush];
 }
 
 static BOOL TrySafeOverlayRebuild(NSInteger generation){
-    if(generation!=gYTReturnGeneration||!gYTReturningFromWatch||WatchIsActive())return NO;
+    if(generation!=gYTReturnGeneration||!gYTReturningFromWatch||WatchIsActive()||CACurrentMediaTime()<gYTPreReturnNotBefore)return NO;
     UIView*pivot=gYTPivot;UIView*app=pivot.superview;YTGPassThroughView*w=(YTGPassThroughView*)gYTWrapper;if(!pivot||!app)return NO;
     UIView*source=StrictCurrentFeedSource(app,pivot,w);if(!source){gYTReturnCandidate=nil;gYTReturnCandidateHits=0;return NO;}
     if(source==gYTReturnCandidate)gYTReturnCandidateHits++;else{gYTReturnCandidate=source;gYTReturnCandidateHits=1;}if(gYTReturnCandidateHits<2)return NO;
-    RebindExistingPortal(source);gYTReturningFromWatch=NO;UpdateSystemTabVisibility();return YES;
+    FinishWatchReturn(source);return YES;
 }
 
 static void ScheduleSafeOverlayRebuild(void){
     NSInteger generation=gYTReturnGeneration;
-    for(NSNumber*d in @[@0.0,@0.03,@0.08,@0.16,@0.28,@0.45,@0.70,@1.0])dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(d.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(),^{TrySafeOverlayRebuild(generation);});
+    for(NSNumber*d in @[@0.0,@0.03,@0.08,@0.13,@0.18,@0.24,@0.32,@0.45,@0.65,@0.90,@1.25])dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(d.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(),^{TrySafeOverlayRebuild(generation);});
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.60*NSEC_PER_SEC)),dispatch_get_main_queue(),^{if(generation!=gYTReturnGeneration||!gYTReturningFromWatch||WatchIsActive())return;UIView*p=gYTPivot,*app=p.superview,*w=gYTWrapper;UIView*source=StrictCurrentFeedSource(app,p,w);if(!source)source=YouTubeContentSource(app,p,w);FinishWatchReturn(source);});
 }
 
 static void ClearControllerLayers(UIView *v,UITabBar *bar){
