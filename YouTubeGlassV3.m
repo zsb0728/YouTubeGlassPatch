@@ -23,6 +23,7 @@ static __weak UIView *gYTWrapper;
 static NSHashTable<UIView*> *gYTWatchViews;
 static NSInteger gYTWatchControllerCount;
 static BOOL gYTReturningFromWatch;
+static BOOL gYTColdProviderScheduleStarted;
 static NSInteger gYTReturnGeneration;
 static __weak UIView *gYTReturnCandidate;
 static NSInteger gYTReturnCandidateHits;
@@ -32,6 +33,8 @@ static IMP gYTWatchDidDisappearIMP;
 static void ScheduleSafeOverlayRebuild(void);
 static void InstallNativeTabBar(UIView *pivot);
 static void RefreshExistingPortalToCurrentFeed(void);
+static void RefreshFloatingTabProvider(UITabBarController*controller);
+static void ScheduleColdProviderRefresh(UITabBarController*controller);
 
 @interface YTGPassThroughView : UIView
 @property(nonatomic,weak) UITabBar *tabBar;
@@ -47,10 +50,11 @@ static void RefreshExistingPortalToCurrentFeed(void);
 @property(nonatomic,weak) UIView *pivot;
 @property(nonatomic,strong) NSArray<UIView*> *pivotItems;
 @property(nonatomic) BOOL syncing;
+@property(nonatomic) CFTimeInterval suppressUntil;
 @end
 @implementation YTGNativeTabDelegate
 - (void)tabBarController:(UITabBarController*)controller didSelectViewController:(UIViewController*)viewController {
-    if(self.syncing)return; NSInteger i=controller.selectedIndex;
+    if(self.syncing||CACurrentMediaTime()<self.suppressUntil)return; NSInteger i=controller.selectedIndex;
     if(i<0||i>=(NSInteger)self.pivotItems.count)return;
     UIView *original=self.pivotItems[i]; SEL tap=sel_registerName("didTapButton"); SEL doTap=sel_registerName("doTap");
     if([original respondsToSelector:tap])((void(*)(id,SEL))objc_msgSend)(original,tap);
@@ -338,10 +342,32 @@ static UIView *EnsurePortal(UIViewController*vc,UIView*source){
     return portal;
 }
 
+static UIView*FindFloatingTabBar(UIView*v){
+    if([NSStringFromClass(v.class)isEqualToString:@"_UIFloatingTabBar"])return v;for(UIView*s in v.subviews){UIView*found=FindFloatingTabBar(s);if(found)return found;}return nil;
+}
+
+static void InvalidateFloatingTabBackdrop(UITabBarController*controller){
+    if(!controller)return;UIView*floating=FindFloatingTabBar(controller.view);if(!floating)return;[CATransaction begin];[CATransaction setDisableActions:YES];
+    for(NSString*n in @[@"_updateBackgroundProperties",@"_refreshSelectedLeaf",@"_setNeedsSelectionAlphaUpdate",@"_setNeedsSelectionFrameUpdate",@"_setNeedsScrollToSelectedItem"]){SEL s=sel_registerName(n.UTF8String);if([floating respondsToSelector:s])((void(*)(id,SEL))objc_msgSend)(floating,s);}
+    SEL inv=sel_registerName("_invalidateDataSourceAnimated:");if([floating respondsToSelector:inv])((void(*)(id,SEL,BOOL))objc_msgSend)(floating,inv,NO);
+    SEL frame=sel_registerName("_updateSelectionViewFrameAnimated:completion:");if([floating respondsToSelector:frame])((void(*)(id,SEL,BOOL,id))objc_msgSend)(floating,frame,NO,nil);
+    [floating setNeedsLayout];[floating layoutIfNeeded];[controller.view setNeedsLayout];[controller.view layoutIfNeeded];[CATransaction commit];[CATransaction flush];
+}
+
+static void RefreshFloatingTabProvider(UITabBarController*controller){
+    if(!controller||controller.viewControllers.count<2)return;InvalidateFloatingTabBackdrop(controller);YTGNativeTabDelegate*d=(YTGNativeTabDelegate*)controller.delegate;NSInteger current=controller.selectedIndex;if(current<0||current>=(NSInteger)controller.viewControllers.count)current=0;NSInteger neighbor=current+1<(NSInteger)controller.viewControllers.count?current+1:current-1;
+    d.syncing=YES;d.suppressUntil=CACurrentMediaTime()+.12;[CATransaction begin];[CATransaction setDisableActions:YES];[UIView performWithoutAnimation:^{controller.selectedIndex=neighbor;[controller.view setNeedsLayout];[controller.view layoutIfNeeded];controller.selectedIndex=current;[controller.view setNeedsLayout];[controller.view layoutIfNeeded];}];[CATransaction commit];d.syncing=NO;[CATransaction flush];InvalidateFloatingTabBackdrop(controller);
+}
+
+static void ScheduleColdProviderRefresh(UITabBarController*controller){
+    if(gYTColdProviderScheduleStarted)return;gYTColdProviderScheduleStarted=YES;__weak UITabBarController*weakController=controller;
+    for(NSNumber*d in @[@0.03,@0.12,@0.30,@0.60,@1.0,@1.6,@2.4])dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(d.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(),^{if(weakController&&!WatchIsActive())RefreshFloatingTabProvider(weakController);});
+}
+
 static void RebindExistingPortal(UIView*source){
     UIView*pivot=gYTPivot;UITabBarController*controller=objc_getAssociatedObject(pivot,kYTNativeControllerKey);UIView*portal=objc_getAssociatedObject(controller,kYTPortalKey);if(!controller||!portal||!source)return;
     SEL setSource=sel_registerName("setSourceView:");if([portal respondsToSelector:setSource]){[CATransaction begin];[CATransaction setDisableActions:YES];((void(*)(id,SEL,id))objc_msgSend)(portal,setSource,source);[CATransaction commit];}
-    YTGWeakBox*box=objc_getAssociatedObject(controller,kYTPortalSourceKey);if(!box){box=[YTGWeakBox new];objc_setAssociatedObject(controller,kYTPortalSourceKey,box,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}box.value=source;[CATransaction flush];
+    YTGWeakBox*box=objc_getAssociatedObject(controller,kYTPortalSourceKey);if(!box){box=[YTGWeakBox new];objc_setAssociatedObject(controller,kYTPortalSourceKey,box,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}box.value=source;[CATransaction flush];RefreshFloatingTabProvider(controller);
 }
 
 static void RefreshExistingPortalToCurrentFeed(void){
@@ -391,7 +417,7 @@ static void InstallNativeTabBar(UIView *pivot) {
     UIView*app=pivot.superview;YTGPassThroughView*w=objc_getAssociatedObject(pivot,kYTNativeWrapperKey);gYTPivot=pivot;gYTWrapper=w;if(!CGRectEqualToRect(w.frame,app.bounds))w.frame=app.bounds;UpdateSystemTabVisibility();
     if(!CGRectEqualToRect(controller.view.frame,w.bounds))controller.view.frame=w.bounds;UITabBar*bar=controller.tabBar;w.tabBar=bar;
     if(created||rebuild){ClearControllerLayers(controller.view,bar);[controller.view setNeedsLayout];[controller.view layoutIfNeeded];}
-    UIView*source=YouTubeContentSource(app,pivot,w);EnsurePortal(controller,source);if(app.subviews.lastObject!=w)[app bringSubviewToFront:w];
+    UIView*source=YouTubeContentSource(app,pivot,w);EnsurePortal(controller,source);if(created||rebuild){RefreshFloatingTabProvider(controller);ScheduleColdProviderRefresh(controller);}if(app.subviews.lastObject!=w)[app bringSubviewToFront:w];
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
