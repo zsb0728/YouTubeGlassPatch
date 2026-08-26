@@ -18,7 +18,8 @@ static BOOL YTGSelected(UIView*v){SEL s=sel_registerName("selected");return[v re
 static void YTGClear(UIView*v){v.opaque=NO;v.backgroundColor=UIColor.clearColor;v.layer.backgroundColor=nil;}
 static BOOL YTGDirectFullBlur(UIView*v,UIView*host){if(![v isKindOfClass:UIVisualEffectView.class])return NO;CGRect r=[v convertRect:v.bounds toView:host];return r.size.width>host.bounds.size.width*.9&&r.size.height>60&&r.size.height<100&&[((UIVisualEffectView*)v).effect isKindOfClass:UIBlurEffect.class];}
 static __weak UIView *gYTGCurrentPivot; static CADisplayLink *gYTGGuardLink;
-static UIVisualEffectView*YTGGlass(BOOL interactive) API_AVAILABLE(ios(26.0)){UIGlassEffect*e=[UIGlassEffect effectWithStyle:UIGlassEffectStyleClear];e.interactive=interactive;UIVisualEffectView*v=[[UIVisualEffectView alloc]initWithEffect:e];v.userInteractionEnabled=NO;v.opaque=NO;v.backgroundColor=UIColor.clearColor;v.cornerConfiguration=[UICornerConfiguration capsuleConfiguration];return v;}
+static UIVisualEffectView*YTGGlass(BOOL interactive) API_AVAILABLE(ios(26.0)){UIGlassEffect*e=[UIGlassEffect effectWithStyle:UIGlassEffectStyleClear];e.interactive=interactive;UIVisualEffectView*v=[[UIVisualEffectView alloc]initWithEffect:e];v.userInteractionEnabled=NO;v.opaque=NO;v.backgroundColor=UIColor.clearColor;v.layer.backgroundColor=nil;v.cornerConfiguration=[UICornerConfiguration capsuleConfiguration];return v;}
+static void YTGRefreshGlass(UIVisualEffectView*v,BOOL interactive) API_AVAILABLE(ios(26.0)){if(!v)return;UIGlassEffect*e=[UIGlassEffect effectWithStyle:UIGlassEffectStyleClear];e.interactive=interactive;v.effect=e;YTGClear(v);v.cornerConfiguration=[UICornerConfiguration capsuleConfiguration];v.userInteractionEnabled=NO;}
 static void YTGFailOpen(UIView*host){UIVisualEffectView*a=objc_getAssociatedObject(host,kYTGBaseKey),*b=objc_getAssociatedObject(host,kYTGLensKey);a.hidden=YES;b.hidden=YES;for(UIView*s in host.subviews)if(YTGDirectFullBlur(s,host)){s.hidden=NO;} }
 static void YTGStyle(UIView*host) API_AVAILABLE(ios(26.0)){
  if(!host.window||host.bounds.size.width<300||host.bounds.size.height<60)return;
@@ -30,14 +31,15 @@ static void YTGStyle(UIView*host) API_AVAILABLE(ios(26.0)){
  if(!officialBlur){YTGFailOpen(host);return;}
  UIVisualEffectView*base=objc_getAssociatedObject(host,kYTGBaseKey),*lens=objc_getAssociatedObject(host,kYTGLensKey);
  if(!base){base=YTGGlass(NO);lens=YTGGlass(YES);[host insertSubview:base aboveSubview:officialBlur];[host insertSubview:lens aboveSubview:base];objc_setAssociatedObject(host,kYTGBaseKey,base,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(host,kYTGLensKey,lens,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
+ YTGRefreshGlass(base,NO);YTGRefreshGlass(lens,YES);
  // Verified visual-only surfaces. Never change frames, interaction, gestures, ancestors, Feed, or player.
  officialBlur.hidden=YES;officialBlur.userInteractionEnabled=NO;YTGClear(host);YTGClear(itemContainer);
  for(UIView*s in host.subviews)if(s!=base&&s!=lens&&s!=officialBlur&&s!=itemContainer&&s.bounds.size.height<=2)YTGClear(s);
  gYTGCurrentPivot=host;
  CGFloat safe=host.safeAreaInsets.bottom;if(safe<1&&host.window)safe=host.window.safeAreaInsets.bottom;
- // 对齐 Instagram/X 的悬浮比例：左右约 5.5%，内容区 50pt 高，位于原按钮 47pt 区域中央。
- CGFloat h=50.0,side=24.0;CGRect capsule=CGRectMake(side,0.0,host.bounds.size.width-side*2.0,h);base.frame=capsule;base.hidden=NO;
- UIView*selected=items.firstObject;for(UIView*i in items)if(YTGSelected(i)){selected=i;break;}CGRect ir=[selected convertRect:selected.bounds toView:host];CGFloat lh=44.0;CGFloat x=MAX(CGRectGetMinX(capsule)+3,CGRectGetMinX(ir)+5),mx=MIN(CGRectGetMaxX(capsule)-3,CGRectGetMaxX(ir)-5);lens.frame=CGRectMake(x,3.0,MAX(28.0,mx-x),lh);lens.hidden=NO;
+ // 对齐 82pt 原底栏与抖音原生悬浮玻璃比例：62pt 胶囊，56pt 选中透镜。
+ CGFloat h=62.0,side=24.0;CGRect capsule=CGRectMake(side,0.0,host.bounds.size.width-side*2.0,h);base.frame=capsule;base.hidden=NO;
+ UIView*selected=items.firstObject;for(UIView*i in items)if(YTGSelected(i)){selected=i;break;}CGRect ir=[selected convertRect:selected.bounds toView:host];CGFloat lh=56.0;CGFloat x=MAX(CGRectGetMinX(capsule)+3,CGRectGetMinX(ir)+5),mx=MIN(CGRectGetMaxX(capsule)-3,CGRectGetMaxX(ir)-5);lens.frame=CGRectMake(x,3.0,MAX(28.0,mx-x),lh);lens.hidden=NO;
  [host insertSubview:base belowSubview:itemContainer];[host insertSubview:lens belowSubview:itemContainer];base.userInteractionEnabled=NO;lens.userInteractionEnabled=NO;host.clipsToBounds=NO;
 }
 static void YTGGuardTick(CADisplayLink*link){
@@ -58,4 +60,4 @@ static void YTGPivotLayout(UIView*self,SEL cmd){if(gPivotLayoutIMP)((void(*)(id,
 static UIView*YTGPivotAncestor(UIView*v){for(UIView*p=v.superview;p;p=p.superview)if([NSStringFromClass(p.class)isEqualToString:@"YTPivotBarView"])return p;return nil;}
 static void YTGItemSetSelected(id self,SEL cmd,BOOL selected){if(gItemSetSelectedIMP)((void(*)(id,SEL,BOOL))gItemSetSelectedIMP)(self,cmd,selected);UIView*p=YTGPivotAncestor(self);if(p)dispatch_async(dispatch_get_main_queue(),^{[p setNeedsLayout];});}
 static void YTGInstall(void){Class p=objc_getClass("YTPivotBarView");Method pm=p?class_getInstanceMethod(p,@selector(layoutSubviews)):NULL;if(pm&&!gPivotHooked){gPivotHooked=YES;gPivotLayoutIMP=method_getImplementation(pm);const char*t=method_getTypeEncoding(pm);if(!class_addMethod(p,@selector(layoutSubviews),(IMP)YTGPivotLayout,t))method_setImplementation(class_getInstanceMethod(p,@selector(layoutSubviews)),(IMP)YTGPivotLayout);}Class i=objc_getClass("YTPivotBarItemView");SEL ss=sel_registerName("setSelected:");Method sm=i?class_getInstanceMethod(i,ss):NULL;if(sm&&!gItemHooked){gItemHooked=YES;gItemSetSelectedIMP=method_getImplementation(sm);const char*t=method_getTypeEncoding(sm);if(!class_addMethod(i,ss,(IMP)YTGItemSetSelected,t))method_setImplementation(class_getInstanceMethod(i,ss),(IMP)YTGItemSetSelected);}}
-__attribute__((constructor(101)))static void YTGStart(void){YTGEnableFlags();dispatch_async(dispatch_get_main_queue(),^{YTGInstall();for(NSNumber*d in @[@0.05,@0.2,@0.5,@1.0,@2.0])dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(d.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(),^{YTGEnableFlags();YTGInstall();});});}
+__attribute__((constructor(101)))static void YTGStart(void){YTGEnableFlags();dispatch_async(dispatch_get_main_queue(),^{YTGInstall();for(NSNumber*d in @[@0.05,@0.2,@0.5,@1.0])dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(d.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(),^{YTGInstall();});});}
