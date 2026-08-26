@@ -19,7 +19,9 @@ jobs:
       - name: Boot, run, assert, screenshot
         run: |
           set -euxo pipefail
-          UDID=$(xcrun simctl create YTGTest 'iPhone 17 Pro' 'iOS 26.0')
+          RUNTIME=$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["runtimes"] if x.get("isAvailable") and "iOS 26" in x["name"]]; print(r[-1]["identifier"])')
+          DEVICE=$(xcrun simctl list devicetypes -j | python3 -c 'import json,sys; d=[x for x in json.load(sys.stdin)["devicetypes"] if "iPhone" in x["name"]]; print(d[-1]["identifier"])')
+          UDID=$(xcrun simctl create YTGTest "$DEVICE" "$RUNTIME")
           xcrun simctl boot "$UDID"
           open -a Simulator --args -CurrentDeviceUDID "$UDID"
           xcrun simctl bootstatus "$UDID" -b
