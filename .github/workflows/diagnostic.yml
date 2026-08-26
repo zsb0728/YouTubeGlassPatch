@@ -1,0 +1,22 @@
+name: Build YouTube Glass Diagnostic
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build arm64 diagnostic dylib
+        run: |
+          set -euxo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p out
+          xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -fobjc-arc -fblocks -O2 -dynamiclib YouTubeGlassDiagnostic.m -framework UIKit -framework Foundation -framework QuartzCore -framework CoreGraphics -install_name '@executable_path/Frameworks/YouTubeGlassDiagnostic.dylib' -current_version 1.0 -compatibility_version 1.0 -o out/YouTubeGlassDiagnostic.dylib
+          file out/YouTubeGlassDiagnostic.dylib
+          otool -L out/YouTubeGlassDiagnostic.dylib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YouTubeGlassDiagnostic-dylib
+          path: out/YouTubeGlassDiagnostic.dylib
+          retention-days: 30
