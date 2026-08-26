@@ -66,18 +66,20 @@ static void YTGClearInternalBackdrops(UIView *root,UIView *background,UIView *se
     }
 }
 
-static BOOL YTGHasHostNativeGlass(UIView *root,UIView *fallbackA,UIView *fallbackB,UIView *host){
+static void YTGSuppressFullWidthGlass(UIView *root,UIView *background,UIView *selection,UIView *host){
     for(UIView *s in root.subviews){
-        if(s==fallbackA||s==fallbackB)continue;
+        if(s==background||s==selection)continue;
         if([s isKindOfClass:UIVisualEffectView.class]){
-            UIVisualEffect *effect=((UIVisualEffectView*)s).effect;
-            if([effect isKindOfClass:UIGlassEffect.class]){
-                CGRect r=[s convertRect:s.bounds toView:host];if(r.size.width>host.bounds.size.width*.45&&r.size.height>28)return YES;
+            UIVisualEffectView *effectView=(UIVisualEffectView*)s;
+            CGRect r=[s convertRect:s.bounds toView:host];
+            BOOL fullWidth=r.size.width>host.bounds.size.width*.78&&r.size.height>28&&r.size.height<180;
+            if(fullWidth&&[effectView.effect isKindOfClass:UIGlassEffect.class]){
+                // YouTube 的实验开关会生成全宽玻璃底板；保留其 overlay 布局，只关掉底板视觉。
+                effectView.effect=nil;effectView.hidden=YES;effectView.userInteractionEnabled=NO;
             }
         }
-        if(YTGHasHostNativeGlass(s,fallbackA,fallbackB,host))return YES;
+        if(!YTGIsPivotItem(s))YTGSuppressFullWidthGlass(s,background,selection,host);
     }
-    return NO;
 }
 
 static UIVisualEffectView *YTGGlassView(BOOL interactive) API_AVAILABLE(ios(26.0)){
@@ -93,8 +95,8 @@ static void YTGRemoveFallback(UIView *host){
 static void YTGStylePivot(UIView *host) API_AVAILABLE(ios(26.0)){
     if(!host.window||host.bounds.size.width<100||host.bounds.size.height<30)return;
     UIVisualEffectView *background=objc_getAssociatedObject(host,kYTGBackgroundKey),*selection=objc_getAssociatedObject(host,kYTGSelectionKey);
-    // YouTube 自己已按开关生成官方玻璃时完全让路，只保留宿主实现。
-    if(YTGHasHostNativeGlass(host,background,selection,host)){YTGRemoveFallback(host);return;}
+    // 保留 YouTube 官方 overlay/Feed 布局，但屏蔽其全宽毛玻璃底板，改由下面的悬浮胶囊呈现。
+    YTGSuppressFullWidthGlass(host,background,selection,host);
 
     NSMutableArray<UIView*> *items=[NSMutableArray array];YTGCollectItems(host,items);if(items.count<2)return;
     [items sortUsingComparator:^NSComparisonResult(UIView*a,UIView*b){CGRect ar=[a convertRect:a.bounds toView:host],br=[b convertRect:b.bounds toView:host];return CGRectGetMinX(ar)<CGRectGetMinX(br)?NSOrderedAscending:NSOrderedDescending;}];
@@ -103,8 +105,9 @@ static void YTGStylePivot(UIView *host) API_AVAILABLE(ios(26.0)){
     // 只清理原底栏内部的旧背景；不碰 superview、Feed、scroll view、窗口和播放器。
     YTGClearSurface(host);YTGClearInternalBackdrops(host,background,selection,3);host.clipsToBounds=NO;
     CGFloat safe=host.safeAreaInsets.bottom;if(safe<1&&host.window)safe=host.window.safeAreaInsets.bottom;
-    CGFloat h=MIN(64.0,MAX(48.0,host.bounds.size.height-safe-4.0));
-    CGRect capsule=CGRectMake(10.0,MAX(2.0,(host.bounds.size.height-safe-h)/2.0),MAX(0.0,host.bounds.size.width-20.0),h);
+    CGFloat h=MIN(58.0,MAX(48.0,host.bounds.size.height-safe-6.0));
+    CGFloat side=16.0;
+    CGRect capsule=CGRectMake(side,MAX(2.0,(host.bounds.size.height-safe-h)/2.0),MAX(0.0,host.bounds.size.width-side*2.0),h);
     background.frame=capsule;background.layer.cornerRadius=h/2.0;
 
     UIView *selected=items.firstObject;for(UIView *item in items)if(YTGSelected(item)){selected=item;break;}
