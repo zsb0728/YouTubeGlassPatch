@@ -89,6 +89,6 @@ static void YTGInstall(void){
 }
 
 __attribute__((constructor))static void YTGStart(void){
-    // Targeted hook installation only: no objc_getClassList, no window scans, no timers, no diagnostics.
+    // Targeted hook installation only: no global runtime class scan, no window scans, no timers, no diagnostics.
     YTGInstall();dispatch_async(dispatch_get_main_queue(),^{YTGInstall();});
 }
