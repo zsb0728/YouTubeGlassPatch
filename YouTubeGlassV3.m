@@ -2,112 +2,132 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
-// YouTube 原生底栏液态玻璃：不替换 YTPivotBarView，不创建控制器/Portal，
-// 只把 iOS 26 官方 UIGlassEffect 放到原按钮下面。
+// 原地启用 YouTube 21.33.6 自带的 iOS 26 Frosted Pivot Bar；若宿主官方路径未产出，
+// 仅在原 YTPivotBarView 内放 UIGlassEffect 兜底。不替换底栏、不覆盖窗口、不修改播放器/Feed。
 static const void *kYTGBackgroundKey=&kYTGBackgroundKey;
 static const void *kYTGSelectionKey=&kYTGSelectionKey;
 static IMP gOriginalLayout;
 static BOOL gInstalled;
 
-static void YTGClearSurface(UIView *v){
-    if(!v)return;
-    v.opaque=NO;
-    v.backgroundColor=UIColor.clearColor;
-    v.layer.backgroundColor=nil;
+static BOOL YTGYes(id self,SEL cmd){return YES;}
+static BOOL YTGNo(id self,SEL cmd){return NO;}
+
+static BOOL YTGIsBoolGetter(Method m){
+    if(!m||method_getNumberOfArguments(m)!=2)return NO;
+    char *t=method_copyReturnType(m);BOOL ok=t&&(t[0]=='B'||t[0]=='c'||t[0]=='C');if(t)free(t);return ok;
 }
 
+static BOOL YTGDesiredFlag(const char *name,BOOL *value){
+    static const char *yes[]={
+        "isFrostedPivotBarPermitted","isLiquidGlassAvailable","computeIsLiquidGlassAvailable",
+        "useLiquidGlassStyling","mainAppCoreClientEnableModernIaFrostedBottomBar",
+        "mainAppCoreClientEnableModernIaFrostedBottomBarStartupScheduler",
+        "mainAppCoreClientEnableModernIaFrostedPivotBar",
+        "mainAppCoreClientEnableModernIaFrostedPivotBarClipped",
+        "mainAppCoreClientEnableModernIaFrostedPivotBarInvalidateOnMarginChange",
+        "mainAppCoreClientEnableModernIaFrostedPivotBarUpdatedBackdrop",
+        "mainAppCoreClientIosEnableModernIaFrostedBottomBarFixForSearch",
+        "mainAppCoreClientScheduleModernIaFrostedPivotBarInitializationAfterStartup"
+    };
+    if(!strcmp(name,"optOutOfFrostedPivotBar")){*value=NO;return YES;}
+    for(NSUInteger i=0;i<sizeof(yes)/sizeof(yes[0]);i++)if(!strcmp(name,yes[i])){*value=YES;return YES;}
+    return NO;
+}
+
+static void YTGHookFlagsOnClass(Class cls){
+    unsigned count=0;Method *list=class_copyMethodList(cls,&count);
+    for(unsigned i=0;i<count;i++){BOOL value=NO;Method m=list[i];if(YTGDesiredFlag(sel_getName(method_getName(m)),&value)&&YTGIsBoolGetter(m))method_setImplementation(m,value?(IMP)YTGYes:(IMP)YTGNo);}
+    free(list);
+}
+
+static void YTGEnableOfficialFlags(void){
+    int count=objc_getClassList(NULL,0);if(count<=0)return;
+    Class *classes=(__unsafe_unretained Class*)calloc((size_t)count,sizeof(Class));count=objc_getClassList(classes,count);
+    for(int i=0;i<count;i++){YTGHookFlagsOnClass(classes[i]);YTGHookFlagsOnClass(object_getClass(classes[i]));}
+    free(classes);
+}
+
+static void YTGClearSurface(UIView *v){if(!v)return;v.opaque=NO;v.backgroundColor=UIColor.clearColor;v.layer.backgroundColor=nil;}
+
+static BOOL YTGIsPivotItem(UIView *v){return [NSStringFromClass(v.class)isEqualToString:@"YTPivotBarItemView"];}
+
 static void YTGCollectItems(UIView *v,NSMutableArray<UIView*> *out){
-    for(UIView *s in v.subviews){
-        if([NSStringFromClass(s.class)isEqualToString:@"YTPivotBarItemView"]){
-            if(!s.hidden&&s.alpha>.01&&s.bounds.size.width>20)[out addObject:s];
-        }else if(![s isKindOfClass:UIVisualEffectView.class])YTGCollectItems(s,out);
+    for(UIView *s in v.subviews){if(YTGIsPivotItem(s)){if(!s.hidden&&s.alpha>.01&&s.bounds.size.width>20)[out addObject:s];}else if(![s isKindOfClass:UIVisualEffectView.class])YTGCollectItems(s,out);}
+}
+
+static BOOL YTGSelected(UIView *item){SEL sel=sel_registerName("selected");return [item respondsToSelector:sel]&&((BOOL(*)(id,SEL))objc_msgSend)(item,sel);}
+
+static void YTGClearInternalBackdrops(UIView *root,UIView *background,UIView *selection,NSInteger depth){
+    if(depth<0)return;
+    for(UIView *s in root.subviews){
+        if(s==background||s==selection||YTGIsPivotItem(s)||[s isKindOfClass:UIControl.class]||[s isKindOfClass:UILabel.class]||[s isKindOfClass:UIImageView.class])continue;
+        NSString *name=NSStringFromClass(s.class);if([name containsString:@"Badge"]||[name containsString:@"Avatar"]||[name containsString:@"Indicator"])continue;
+        YTGClearSurface(s);YTGClearInternalBackdrops(s,background,selection,depth-1);
     }
 }
 
-static BOOL YTGSelected(UIView *item){
-    SEL sel=sel_registerName("selected");
-    return [item respondsToSelector:sel]&&((BOOL(*)(id,SEL))objc_msgSend)(item,sel);
+static BOOL YTGHasHostNativeGlass(UIView *root,UIView *fallbackA,UIView *fallbackB,UIView *host){
+    for(UIView *s in root.subviews){
+        if(s==fallbackA||s==fallbackB)continue;
+        if([s isKindOfClass:UIVisualEffectView.class]){
+            UIVisualEffect *effect=((UIVisualEffectView*)s).effect;
+            if([effect isKindOfClass:UIGlassEffect.class]){
+                CGRect r=[s convertRect:s.bounds toView:host];if(r.size.width>host.bounds.size.width*.45&&r.size.height>28)return YES;
+            }
+        }
+        if(YTGHasHostNativeGlass(s,fallbackA,fallbackB,host))return YES;
+    }
+    return NO;
 }
 
 static UIVisualEffectView *YTGGlassView(BOOL interactive) API_AVAILABLE(ios(26.0)){
-    UIGlassEffect *effect=[UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
-    effect.interactive=interactive;
-    UIVisualEffectView *view=[[UIVisualEffectView alloc]initWithEffect:effect];
-    view.userInteractionEnabled=NO;
-    view.opaque=NO;
-    view.backgroundColor=UIColor.clearColor;
-    view.clipsToBounds=YES;
-    return view;
+    UIGlassEffect *effect=[UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];effect.interactive=interactive;
+    UIVisualEffectView *view=[[UIVisualEffectView alloc]initWithEffect:effect];view.userInteractionEnabled=NO;view.opaque=NO;view.backgroundColor=UIColor.clearColor;view.clipsToBounds=YES;view.layer.cornerCurve=kCACornerCurveContinuous;return view;
+}
+
+static void YTGRemoveFallback(UIView *host){
+    UIVisualEffectView *a=objc_getAssociatedObject(host,kYTGBackgroundKey),*b=objc_getAssociatedObject(host,kYTGSelectionKey);
+    [a removeFromSuperview];[b removeFromSuperview];objc_setAssociatedObject(host,kYTGBackgroundKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(host,kYTGSelectionKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static void YTGStylePivot(UIView *host) API_AVAILABLE(ios(26.0)){
     if(!host.window||host.bounds.size.width<100||host.bounds.size.height<30)return;
+    UIVisualEffectView *background=objc_getAssociatedObject(host,kYTGBackgroundKey),*selection=objc_getAssociatedObject(host,kYTGSelectionKey);
+    // YouTube 自己已按开关生成官方玻璃时完全让路，只保留宿主实现。
+    if(YTGHasHostNativeGlass(host,background,selection,host)){YTGRemoveFallback(host);return;}
 
-    NSMutableArray<UIView*> *items=[NSMutableArray array];
-    YTGCollectItems(host,items);
-    if(items.count<2)return;
-    [items sortUsingComparator:^NSComparisonResult(UIView*a,UIView*b){
-        CGRect ar=[a convertRect:a.bounds toView:host],br=[b convertRect:b.bounds toView:host];
-        return CGRectGetMinX(ar)<CGRectGetMinX(br)?NSOrderedAscending:NSOrderedDescending;
-    }];
+    NSMutableArray<UIView*> *items=[NSMutableArray array];YTGCollectItems(host,items);if(items.count<2)return;
+    [items sortUsingComparator:^NSComparisonResult(UIView*a,UIView*b){CGRect ar=[a convertRect:a.bounds toView:host],br=[b convertRect:b.bounds toView:host];return CGRectGetMinX(ar)<CGRectGetMinX(br)?NSOrderedAscending:NSOrderedDescending;}];
+    if(!background){background=YTGGlassView(NO);selection=YTGGlassView(YES);[host insertSubview:background atIndex:0];[host insertSubview:selection aboveSubview:background];objc_setAssociatedObject(host,kYTGBackgroundKey,background,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(host,kYTGSelectionKey,selection,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
 
-    UIVisualEffectView *background=objc_getAssociatedObject(host,kYTGBackgroundKey);
-    UIVisualEffectView *selection=objc_getAssociatedObject(host,kYTGSelectionKey);
-    if(!background){
-        background=YTGGlassView(NO);
-        selection=YTGGlassView(YES);
-        background.alpha=0; selection.alpha=0;
-        [host insertSubview:background atIndex:0];
-        [host insertSubview:selection aboveSubview:background];
-        objc_setAssociatedObject(host,kYTGBackgroundKey,background,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(host,kYTGSelectionKey,selection,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
+    // 只清理原底栏内部的旧背景；不碰 superview、Feed、scroll view、窗口和播放器。
+    YTGClearSurface(host);YTGClearInternalBackdrops(host,background,selection,3);host.clipsToBounds=NO;
+    CGFloat safe=host.safeAreaInsets.bottom;if(safe<1&&host.window)safe=host.window.safeAreaInsets.bottom;
+    CGFloat h=MIN(64.0,MAX(48.0,host.bounds.size.height-safe-4.0));
+    CGRect capsule=CGRectMake(10.0,MAX(2.0,(host.bounds.size.height-safe-h)/2.0),MAX(0.0,host.bounds.size.width-20.0),h);
+    background.frame=capsule;background.layer.cornerRadius=h/2.0;
 
-    // 只清 host 自身旧底色；绝不递归清祖先、Feed 或播放器。
-    YTGClearSurface(host);
-
-    CGFloat side=12.0,top=4.0,bottom=MAX(4.0,host.safeAreaInsets.bottom+2.0);
-    CGRect capsule=UIEdgeInsetsInsetRect(host.bounds,UIEdgeInsetsMake(top,side,bottom,side));
-    if(capsule.size.height<40){capsule=CGRectInset(host.bounds,side,2);}
-    background.frame=capsule;
-    background.layer.cornerRadius=capsule.size.height/2.0;
-
-    UIView *selected=nil;
-    for(UIView *item in items)if(YTGSelected(item)){selected=item;break;}
-    if(!selected)selected=items.firstObject;
-    CGRect itemRect=[selected convertRect:selected.bounds toView:host];
-    CGFloat insetY=MAX(2.0,(itemRect.size.height-capsule.size.height)/2.0+2.0);
-    CGRect lens=CGRectInset(itemRect,4.0,insetY);
-    lens=CGRectIntersection(lens,capsule);
-    if(!CGRectIsNull(lens)&&lens.size.width>20&&lens.size.height>20){
-        selection.hidden=NO;
-        selection.frame=lens;
-        selection.layer.cornerRadius=lens.size.height/2.0;
-    }else selection.hidden=YES;
-
-    // 玻璃永远在原按钮下面，原按钮及其手势、角标、头像完全不动。
-    [host sendSubviewToBack:background];
-    [host insertSubview:selection aboveSubview:background];
-    [UIView performWithoutAnimation:^{background.alpha=1;selection.alpha=1;}];
+    UIView *selected=items.firstObject;for(UIView *item in items)if(YTGSelected(item)){selected=item;break;}
+    CGRect itemRect=[selected convertRect:selected.bounds toView:host];CGFloat lensH=MAX(36.0,h-6.0);
+    CGFloat lensX=MAX(CGRectGetMinX(capsule)+3.0,CGRectGetMinX(itemRect)+4.0);CGFloat lensMax=MIN(CGRectGetMaxX(capsule)-3.0,CGRectGetMaxX(itemRect)-4.0);
+    CGRect lens=CGRectMake(lensX,CGRectGetMidY(capsule)-lensH/2.0,MAX(28.0,lensMax-lensX),lensH);
+    selection.frame=lens;selection.layer.cornerRadius=lensH/2.0;selection.hidden=NO;
+    [host sendSubviewToBack:background];[host insertSubview:selection aboveSubview:background];
 }
 
-static void YTGLayout(UIView *self,SEL cmd){
-    if(gOriginalLayout)((void(*)(id,SEL))gOriginalLayout)(self,cmd);
-    if(@available(iOS 26.0,*))YTGStylePivot(self);
-}
+static void YTGLayout(UIView *self,SEL cmd){if(gOriginalLayout)((void(*)(id,SEL))gOriginalLayout)(self,cmd);if(@available(iOS 26.0,*))YTGStylePivot(self);}
 
 static void YTGInstall(void){
-    if(gInstalled)return;
-    Class cls=objc_getClass("YTPivotBarView");
-    Method m=class_getInstanceMethod(cls,@selector(layoutSubviews));
-    if(!cls||!m)return;
-    gInstalled=YES;
-    gOriginalLayout=method_getImplementation(m);
-    const char *types=method_getTypeEncoding(m);
-    if(!class_addMethod(cls,@selector(layoutSubviews),(IMP)YTGLayout,types))
-        method_setImplementation(class_getInstanceMethod(cls,@selector(layoutSubviews)),(IMP)YTGLayout);
+    if(gInstalled)return;Class cls=objc_getClass("YTPivotBarView");Method m=cls?class_getInstanceMethod(cls,@selector(layoutSubviews)):NULL;if(!m)return;
+    gInstalled=YES;gOriginalLayout=method_getImplementation(m);const char *types=method_getTypeEncoding(m);
+    if(!class_addMethod(cls,@selector(layoutSubviews),(IMP)YTGLayout,types))method_setImplementation(class_getInstanceMethod(cls,@selector(layoutSubviews)),(IMP)YTGLayout);
 }
 
 __attribute__((constructor)) static void YTGStart(void){
-    dispatch_async(dispatch_get_main_queue(),^{YTGInstall();});
+    YTGEnableOfficialFlags();
+    dispatch_async(dispatch_get_main_queue(),^{
+        YTGInstall();
+        [[NSNotificationCenter defaultCenter]addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification*n){YTGEnableOfficialFlags();YTGInstall();}];
+        for(NSNumber *d in @[@0.05,@0.2,@0.5,@1.0,@2.0])dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(d.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(),^{YTGEnableOfficialFlags();YTGInstall();});
+    });
 }
