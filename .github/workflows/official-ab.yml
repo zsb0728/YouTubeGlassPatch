@@ -1,0 +1,24 @@
+name: Build YouTube Official Glass A-B Diagnostic
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build diagnostic modules
+        run: |
+          set -euxo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p out
+          for spec in 'YouTubeGlassDiagnostic.m:YouTubeGlassDiagnostic' 'YouTubeOfficialFlagsOnly.m:YouTubeOfficialFlagsOnly'; do
+            src=${spec%%:*}; name=${spec##*:}
+            xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -fobjc-arc -fblocks -O2 -dynamiclib "$src" -framework UIKit -framework Foundation -framework QuartzCore -framework CoreGraphics -install_name "@executable_path/Frameworks/$name.dylib" -o "out/$name.dylib"
+            file "out/$name.dylib"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YouTubeOfficialGlassAB-dylibs
+          path: out/*.dylib
+          retention-days: 30
