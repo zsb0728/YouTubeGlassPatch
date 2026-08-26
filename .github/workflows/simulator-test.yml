@@ -1,0 +1,42 @@
+name: Test YouTube Glass iOS 26 Simulator
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build mock app with production source
+        run: |
+          set -euxo pipefail
+          SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          mkdir -p Mock.app
+          xcrun clang -arch arm64 -isysroot "$SDK" -mios-simulator-version-min=26.0 -fobjc-arc -fblocks MockHarness.m YouTubeGlassV3.m -framework UIKit -framework Foundation -framework QuartzCore -o Mock.app/Mock
+          cat > Mock.app/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>Mock</string><key>CFBundleIdentifier</key><string>com.zsb.YouTubeGlassMock</string><key>CFBundleName</key><string>Mock</string><key>CFBundlePackageType</key><string>APPL</string><key>MinimumOSVersion</key><string>26.0</string><key>UILaunchScreen</key><dict/></dict></plist>
+          PLIST
+      - name: Boot, run, assert, screenshot
+        run: |
+          set -euxo pipefail
+          UDID=$(xcrun simctl create YTGTest 'iPhone 17 Pro' 'iOS 26.0')
+          xcrun simctl boot "$UDID"
+          open -a Simulator --args -CurrentDeviceUDID "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" Mock.app
+          xcrun simctl launch --console "$UDID" com.zsb.YouTubeGlassMock > mock.log 2>&1 &
+          sleep 4
+          xcrun simctl io "$UDID" screenshot mock.png
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" com.zsb.YouTubeGlassMock data)
+          cat "$CONTAINER/Documents/initial.json"
+          cat "$CONTAINER/Documents/offscreen.json"
+          cat "$CONTAINER/Documents/returned.json"
+          grep -q '"pass":true' "$CONTAINER/Documents/initial.json"
+          grep -q '"pass":true' "$CONTAINER/Documents/offscreen.json"
+          grep -q '"pass":true' "$CONTAINER/Documents/returned.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YouTubeGlass-simulator-proof
+          path: |
+            mock.png
+            mock.log

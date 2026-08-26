@@ -2,6 +2,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <mach-o/dyld.h>
 
 // YouTube 21.33.6 — native sibling glass architecture.
 // Verified baseline: YTAsyncCollectionView already reaches screen bottom; YTPivotBarView is the white cover.
@@ -88,7 +89,16 @@ static void YTGInstall(void){
     if(sm&&!gItemHooked){gItemHooked=YES;gItemSelectedIMP=method_getImplementation(sm);const char*t=method_getTypeEncoding(sm);if(!class_addMethod(item,ss,(IMP)YTGItemSelected,t))method_setImplementation(class_getInstanceMethod(item,ss),(IMP)YTGItemSelected);}
 }
 
+static void YTGDyldImageAdded(const struct mach_header*header,intptr_t slide){
+    // dyld 回调可能不在主线程，只安排一次廉价的目标类查询；没有全类遍历。
+    dispatch_async(dispatch_get_main_queue(),^{YTGInstall();});
+}
 __attribute__((constructor))static void YTGStart(void){
-    // Targeted hook installation only: no global runtime class scan, no window scans, no timers, no diagnostics.
-    YTGInstall();dispatch_async(dispatch_get_main_queue(),^{YTGInstall();});
+    YTGInstall();
+    _dyld_register_func_for_add_image(YTGDyldImageAdded);
+    dispatch_async(dispatch_get_main_queue(),^{
+        YTGInstall();
+        [[NSNotificationCenter defaultCenter]addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification*n){YTGInstall();}];
+        [[NSNotificationCenter defaultCenter]addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification*n){YTGInstall();}];
+    });
 }
