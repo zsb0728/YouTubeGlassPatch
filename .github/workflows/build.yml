@@ -13,14 +13,12 @@ jobs:
         run: |
           set -euxo pipefail
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          mkdir -p out/YouTubeGlass.framework
-          xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -fobjc-arc -fblocks -O2 -dynamiclib YouTubeGlassV3.m -framework UIKit -framework Foundation -framework QuartzCore -framework CoreGraphics -install_name '@rpath/YouTubeGlass.framework/YouTubeGlass' -current_version 3.0 -compatibility_version 1.0 -o out/YouTubeGlass.framework/YouTubeGlass
-          cp Info.plist out/YouTubeGlass.framework/Info.plist
-          file out/YouTubeGlass.framework/YouTubeGlass
-          otool -L out/YouTubeGlass.framework/YouTubeGlass
-          ditto -c -k --keepParent out/YouTubeGlass.framework YouTubeGlass.framework.zip
+          mkdir -p out
+          xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -fobjc-arc -fblocks -O2 -dynamiclib YouTubeGlassV3.m -framework UIKit -framework Foundation -framework QuartzCore -framework CoreGraphics -install_name '@executable_path/Frameworks/YouTubeGlass.dylib' -current_version 3.1 -compatibility_version 1.0 -o out/YouTubeGlass.dylib
+          file out/YouTubeGlass.dylib
+          otool -L out/YouTubeGlass.dylib
       - uses: actions/upload-artifact@v4
         with:
-          name: YouTubeGlass-framework
-          path: YouTubeGlass.framework.zip
+          name: YouTubeGlass-dylib
+          path: out/YouTubeGlass.dylib
           retention-days: 30

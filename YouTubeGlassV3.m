@@ -170,7 +170,10 @@ static void StopPlaybackAfterWatchExit(id watchController){
 
 static void WatchWillAppear(id self,SEL cmd,BOOL animated){
     objc_setAssociatedObject(self,kYTReturningHomeKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);if(![objc_getAssociatedObject(self,kYTWatchActiveKey)boolValue]){objc_setAssociatedObject(self,kYTWatchActiveKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);gYTWatchControllerCount++;}
-    if(gYTWatchWillAppearIMP)((void(*)(id,SEL,BOOL))gYTWatchWillAppearIMP)(self,cmd,animated);gYTWatchBranch=WatchBranchForController(self);SetPersistentSystemTabBarHidden(YES,animated);
+    // 在 YouTube 开始播放器转场前先撤掉玻璃底栏，避免它短暂盖住播放器；原方法可能
+    // 重排 YTAppView，调用后再钉一次层级。全程不干预播放/迷你播放器状态。
+    SetPersistentSystemTabBarHidden(YES,NO);
+    if(gYTWatchWillAppearIMP)((void(*)(id,SEL,BOOL))gYTWatchWillAppearIMP)(self,cmd,animated);gYTWatchBranch=WatchBranchForController(self);SetPersistentSystemTabBarHidden(YES,NO);
 }
 
 static BOOL ViewTreeContainsPivot(UIView*v){if([NSStringFromClass(v.class)isEqualToString:@"YTPivotBarView"])return YES;for(UIView*s in v.subviews)if(ViewTreeContainsPivot(s))return YES;return NO;}
@@ -184,7 +187,9 @@ static BOOL FeedPivotIsActuallyVisible(void){
 }
 
 static BOOL CompleteWatchReturnIfFeedVisible(id self){
-    if(![objc_getAssociatedObject(self,kYTWatchActiveKey)boolValue]||![objc_getAssociatedObject(self,kYTReturningHomeKey)boolValue]||!FeedPivotIsActuallyVisible()||!PreparePortalForCurrentFeed())return NO;StopPlaybackAfterWatchExit(self);objc_setAssociatedObject(self,kYTReturningHomeKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(self,kYTWatchActiveKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);gYTWatchControllerCount=MAX(0,gYTWatchControllerCount-1);gYTWatchBranch=nil;SetPersistentSystemTabBarHidden(NO,NO);return YES;
+    if(![objc_getAssociatedObject(self,kYTWatchActiveKey)boolValue]||![objc_getAssociatedObject(self,kYTReturningHomeKey)boolValue]||!FeedPivotIsActuallyVisible()||!PreparePortalForCurrentFeed())return NO;
+    // 只恢复底栏，不暂停视频、不关闭 YouTube 官方迷你播放器。播放生命周期归宿主所有。
+    objc_setAssociatedObject(self,kYTReturningHomeKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);objc_setAssociatedObject(self,kYTWatchActiveKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);gYTWatchControllerCount=MAX(0,gYTWatchControllerCount-1);gYTWatchBranch=nil;SetPersistentSystemTabBarHidden(NO,NO);return YES;
 }
 
 static void WatchWillDisappear(id self,SEL cmd,BOOL animated){
@@ -268,9 +273,15 @@ static void InstallNativeTabBar(UIView *pivot) {
 }
 
 static void StylePivot(UIView *host) API_AVAILABLE(ios(26.0)) {
-    if(gYTWatchControllerCount>0){InstallNativeTabBar(host);return;}ExtendRealFeedUnderPivot(host);InstallNativeTabBar(host);if(!gYTOverlayReady)return;ClearSurface(host);ClearShortAncestors(host,260.0);
-    if(![objc_getAssociatedObject(host,kYTConfiguredKey)boolValue]){ClearBottomBarHierarchy(host);objc_setAssociatedObject(host,kYTConfiguredKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
+    // 首次命中布局就让真实 Feed 延伸到底部并清掉 YouTube 的白色底栏承载面；原按钮继续显示，
+    // 直到系统 UITabBar 的 platter 与 portal 都完成布局后才同帧交换，因此冷启动没有白条空窗。
+    if(gYTWatchControllerCount>0){InstallNativeTabBar(host);return;}
+    ExtendRealFeedUnderPivot(host);
+    ClearSurface(host);ClearShortAncestors(host,260.0);
     if(host.clipsToBounds)host.clipsToBounds=NO;
+    InstallNativeTabBar(host);
+    if(!gYTOverlayReady)return;
+    if(![objc_getAssociatedObject(host,kYTConfiguredKey)boolValue]){ClearBottomBarHierarchy(host);objc_setAssociatedObject(host,kYTConfiguredKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
 }
 
 static YTGHook *HookForObject(id obj) {
@@ -291,11 +302,12 @@ static void HookedLayout(UIView *self,SEL cmd) {
 
 static void InstallHook(const char *name,YTGKind kind) {
     Class cls=objc_getClass(name); if(!cls || gHookCount>=12) return;
-    unsigned count=0; Method *list=class_copyMethodList(cls,&count); Method own=NULL;
-    for(unsigned i=0;i<count;i++) if(method_getName(list[i])==@selector(layoutSubviews)){own=list[i];break;}
-    free(list); if(!own)return;
-    gHooks[gHookCount++] = (YTGHook){cls,method_getImplementation(own),kind};
-    method_setImplementation(own,(IMP)HookedLayout);
+    Method method=class_getInstanceMethod(cls,@selector(layoutSubviews)); if(!method)return;
+    // YouTube 版本可能在当前类自身或父类实现 layoutSubviews；直接交换解析后的实现，避免
+    // 因 class_copyMethodList 找不到“自有方法”而错过启动首帧。若继承自父类，先复制到子类。
+    IMP original=method_getImplementation(method);const char*types=method_getTypeEncoding(method);
+    gHooks[gHookCount++] = (YTGHook){cls,original,kind};
+    if(!class_addMethod(cls,@selector(layoutSubviews),(IMP)HookedLayout,types))method_setImplementation(class_getInstanceMethod(cls,@selector(layoutSubviews)),(IMP)HookedLayout);
 }
 
 static void Scan(UIView *v) {
@@ -310,7 +322,10 @@ __attribute__((constructor)) static void StartYouTubeGlassV3(void) {
     dispatch_async(dispatch_get_main_queue(),^{
         InstallWatchControllerHooks();
         InstallHook("YTPivotBarView",YTGKindPivot);
+        // 安装 hook 后立刻扫描当前窗口，不再人为等待 150ms；后续短重试只兜底 YouTube
+        // 尚未建立根视图的情况。进入前台也先扫描，再校正播放器显隐。
+        ScanWindows();
         [[NSNotificationCenter defaultCenter]addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification*n){ScanWindows();SetPersistentSystemTabBarHidden(gYTWatchControllerCount>0,NO);}];
-        for(NSNumber*d in @[@0.15,@0.5,@1.0,@2.0,@4.0])dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(d.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(),^{ScanWindows();});
+        for(NSNumber*d in @[@0.0,@0.03,@0.10,@0.25,@0.5,@1.0,@2.0])dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(d.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(),^{ScanWindows();});
     });
 }
